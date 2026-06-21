@@ -1,190 +1,187 @@
 """
-QuantTurf Pro v3.0 — Professional Grade Horse Racing Prediction Engine
-=======================================================================
-Architecture: Modular | Robust Validation | Performance Optimized | ROI-Focused
-
-Author: QuantTurf Analytics
-Version: 3.0.0 (Professional Release)
-Requirements: streamlit>=1.30, numpy>=1.24, pandas>=2.0, plotly>=5.0, scipy>=1.10
-
-Key Improvements:
-- Modular architecture with dataclasses and validation
-- Robust input validation with detailed error handling
-- Performance optimization: vectorized operations, caching, parallel MC
-- Professional profitability tools: Kelly Criterion, ROI tracking, bankroll management
-- Logging and monitoring
-- Backtesting framework
-- Exportable results with audit trail
+═══════════════════════════════════════════════════════════════════════════════
+ QuantTurf Pro v4.1.0 — "BENTER EDITION + DATA-CALIBRATED"
+═══════════════════════════════════════════════════════════════════════════════
+ Améliorations majeures par rapport à v3.3.0 :
+ ─────────────────────────────────────────────
+ ✅ Modèle Plackett-Luce (Harville) pour ordres d'arrivée exacts
+ ✅ Benter Blend (log-log fusion modèle/marché, formule Benter 1994)
+ ✅ Débiaisage rigoureux de l'overround (favori-outsider bias correction)
+ ✅ Gestion corde TROT AUTOSTART (numéros 4-5-6 favorisés vs 1-2-3 en plat)
+ ✅ Shrinkage bayésien sur la musique (régression vers moyenne empirique)
+ ✅ État du terrain (bon, souple, lourd) + poids + jours de repos
+ ✅ Kelly dynamique (ajusté par incertitude/volatilité)
+ ✅ Paris exotiques rigoureux : Couplé / Trio / Quarté+ / Quinté+ ordre & désordre
+ ✅ Détection de value avec seuil dynamique selon overround
+ ✅ Backtester intégré (mode validation)
+ ✅ Architecture modulaire en classes
+ ✅ Diagnostic complet (calibration, divergence, edge expected)
+═══════════════════════════════════════════════════════════════════════════════
+Sources scientifiques :
+- Benter, W. (1994). "Computer Based Horse Race Handicapping" (Hong Kong)
+- Harville, D. (1973). "Assigning probabilities to outcomes of multi-entry comp."
+- Plackett, R. (1975). "The Analysis of Permutations"
+- Kelly, J. (1956). "A New Interpretation of Information Rate"
+═══════════════════════════════════════════════════════════════════════════════
 """
 
+from __future__ import annotations
 import streamlit as st
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-from scipy.stats import zscore, norm, entropy
-from itertools import combinations
+from scipy.special import gammaln, logsumexp
+from itertools import combinations, permutations
 import re
-import time
-import logging
-from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, List, Tuple, Any
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple, Any
 from functools import lru_cache
-from enum import Enum
-import json
-from datetime import datetime
+import logging
+import time
 import warnings
 
 warnings.filterwarnings("ignore")
-
-# =============================================================================
-# LOGGING & CONFIG
-# =============================================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# 1.  CONFIGURATION GLOBALE
+# =============================================================================
 @dataclass
 class Config:
-    """Centralized configuration management"""
-    APP_VERSION: str = "3.0.0"
+    # --- App ---
+    APP_VERSION: str = "4.1.0"
     APP_NAME: str = "QuantTurf Pro"
-    
-    # Core parameters
-    MC_ITERATIONS: int = 3000
-    MARKET_WEIGHT: float = 0.35
-    VALUE_THRESHOLD: float = 1.15
-    TEMPERATURE: float = 1.5
-    NOISE_BASE: float = 0.15
-    
-    # Advanced parameters
-    KELLY_FRACTION: float = 0.25  # Conservative Kelly
-    MIN_KELLY_ODDS: float = 2.50  # Minimum odds for Kelly calculation
-    CONFIDENCE_MIN_BET: float = 0.65  # Min confidence to place bets
-    
-    # Validation thresholds
-    MIN_RUNNERS: int = 2
-    MAX_RUNNERS: int = 25
-    MIN_MUSIC_LENGTH: int = 1
-    MIN_ODDS: float = 1.01
-    MAX_ODDS: float = 999.0
-    MIN_DISTANCE: int = 800
-    MAX_DISTANCE: int = 8000
-    MIN_AGE: int = 2
-    MAX_AGE: int = 20
-    
-    # Racing types
-    RACE_TYPES: List[str] = field(default_factory=lambda: 
-        ["Plat", "Attelé", "Monté", "Haies", "Steeple-chase", "Cross-country"])
-    
-    # Position scores (music parsing)
-    MUSIC_POSITION_SCORES: Dict[str, float] = field(default_factory=lambda: {
-        "1": 10.0, "2": 7.5, "3": 5.5, "4": 4.0, "5": 3.0,
-        "6": 2.0, "7": 1.5, "8": 1.0, "9": 0.5, "0": 0.2,
-        "D": -2.0, "A": -1.5, "T": -1.5, "R": -1.0, "P": 0.3,
-    })
-    
-    # Race type weights (music)
-    MUSIC_RACE_TYPE_WEIGHTS: Dict[str, float] = field(default_factory=lambda: {
-        "a": 1.00, "m": 0.90, "p": 1.00, "h": 0.95,
-        "s": 0.90, "c": 0.85, "x": 1.00,
-    })
-    
-    # Draw impact
-    DRAW_IMPACT_BASE: Dict[int, float] = field(default_factory=lambda: {
-        1: 0.35, 2: 0.40, 3: 0.35, 4: 0.25, 5: 0.15,
-        6: 0.05, 7: -0.05, 8: -0.12, 9: -0.18, 10: -0.24,
-        11: -0.30, 12: -0.35, 13: -0.40, 14: -0.44, 15: -0.48,
-        16: -0.50, 17: -0.52, 18: -0.54, 19: -0.55, 20: -0.55,
-    })
+    APP_TAG: str = "Benter Edition + Data-Calibrated"
 
-# Global config instance
+    # --- Monte Carlo / Plackett-Luce ---
+    MC_ITERATIONS: int = 8000
+    TEMPERATURE: float = 1.0
+    NOISE_BASE: float = 0.20           # v4.1: +incertitude reconnue
+
+    # --- Marché (CALIBRÉ v4.1 sur backtest 12 courses réelles) ---
+    # Backtest : le marché PMU bat le modèle de 15% en log-loss.
+    # Donc β > α par défaut.
+    MARKET_WEIGHT: float = 0.50        # ↑ de 0.35 → 0.50
+    BENTER_ALPHA: float = 0.40         # ↓ de 1.10 → 0.40
+    BENTER_BETA: float = 1.50          # ↑ de 0.90 → 1.50
+    OVERROUND_CORRECTION: bool = True
+
+    # --- Platt Scaling par discipline (calibré sur backtest) ---
+    PLATT_GLOBAL: Tuple[float, float] = (0.80, -0.40)
+    PLATT_PLAT:   Tuple[float, float] = (0.45, -1.30)  # forte compression
+    PLATT_TROT:   Tuple[float, float] = (1.20, +0.40)  # légère amplification
+    USE_PLATT_CALIBRATION: bool = True
+
+    # --- Benter Blend par discipline (calibré) ---
+    BENTER_AB_PLAT: Tuple[float, float] = (0.30, 0.80)
+    BENTER_AB_TROT: Tuple[float, float] = (0.40, 1.90)
+    USE_DISCIPLINE_BLEND: bool = True
+
+    # --- Value / Kelly (CALIBRÉ v4.1) ---
+    VALUE_THRESHOLD: float = 1.15
+    VALUE_COTE_MIN: float = 5.0        # NEW : filtre cote min value bet
+    VALUE_COTE_MAX: float = 10.0       # NEW : filtre cote max value bet
+    KELLY_FRACTION: float = 0.20       # ↓ de 0.25 → 0.20
+    MIN_KELLY_ODDS: float = 4.50       # ↑ de 2.20 → 4.50
+    MAX_KELLY_STAKE: float = 0.03      # ↓ de 0.05 → 0.03 (cap 3%)
+    PLACE_ODDS_FACTOR: Dict[str, float] = None
+
+    # --- Empirique (corde, expérience) ---
+    EMPIRICAL_WEIGHT: float = 0.25
+    USE_EXPERIENCE_FACTOR: bool = True
+
+    # --- Shrinkage bayésien ---
+    SHRINKAGE_K: float = 4.0           # nb "courses fantômes" vers moyenne
+    POPULATION_MEAN_SCORE: float = 4.0 # moyenne pop. des scores musique
+    POPULATION_MEAN_WIN: float = 0.10  # 10% victoires moyennes pop.
+
+    # --- Paris ---
+    RACE_TYPES: List[str] = None
+    TRACK_CONDITIONS: List[str] = None
+    DEPART_TYPES: List[str] = None
+
+    # --- Musique parsing ---
+    MUSIC_POSITION_SCORES: Dict[str, float] = None
+    MUSIC_RACE_TYPE_WEIGHTS: Dict[str, float] = None
+
+    # --- Tables empiriques corde ---
+    DRAW_WIN_PROB_PLAT: Dict[int, float] = None
+    DRAW_PLACE_PROB_PLAT: Dict[int, float] = None
+    DRAW_WIN_PROB_AUTOSTART: Dict[int, float] = None
+    DRAW_PLACE_PROB_AUTOSTART: Dict[int, float] = None
+
+    def __post_init__(self):
+        if self.MUSIC_POSITION_SCORES is None:
+            self.MUSIC_POSITION_SCORES = {
+                "1": 10.0, "2": 7.5, "3": 5.5, "4": 4.0, "5": 3.0,
+                "6": 2.0, "7": 1.5, "8": 1.0, "9": 0.5, "0": 0.2,
+                "D": -2.0, "A": -1.5, "T": -1.5, "R": -1.0, "P": 0.3,
+            }
+        if self.MUSIC_RACE_TYPE_WEIGHTS is None:
+            self.MUSIC_RACE_TYPE_WEIGHTS = {
+                "a": 1.00, "m": 0.90, "p": 1.00, "h": 0.95,
+                "s": 0.90, "c": 0.85, "x": 1.00,
+            }
+        if self.RACE_TYPES is None:
+            self.RACE_TYPES = ["Plat", "Attelé", "Monté", "Haies",
+                               "Steeple-chase", "Cross-country"]
+        if self.TRACK_CONDITIONS is None:
+            self.TRACK_CONDITIONS = ["Bon", "Bon souple", "Souple",
+                                    "Très souple", "Collant", "Lourd",
+                                    "Très lourd"]
+        if self.DEPART_TYPES is None:
+            self.DEPART_TYPES = ["Stalles (Plat)", "Autostart (Trot)",
+                                "Volte (Trot)", "Élastique (Obstacle)"]
+        if self.PLACE_ODDS_FACTOR is None:
+            # Rapports cote_placé/cote_gagnant empiriques selon nb partants
+            self.PLACE_ODDS_FACTOR = {
+                "small": 0.50,   # ≤ 7 partants : place uniquement sur 2 premiers
+                "medium": 0.40,  # 8-15
+                "large": 0.32,   # ≥16
+            }
+
+        # --- TABLES EMPIRIQUES BASÉES SUR ÉTUDES PUBLIQUES (Turf.bzh, PMU) ---
+        # PLAT : corde 1-4 favorisée, surtout < 1800m
+        if self.DRAW_WIN_PROB_PLAT is None:
+            self.DRAW_WIN_PROB_PLAT = {
+                1: 11.8, 2: 11.5, 3: 11.0, 4: 10.5, 5: 9.5,
+                6: 8.5, 7: 7.5, 8: 6.5, 9: 5.5, 10: 4.8,
+                11: 4.2, 12: 3.6, 13: 3.2, 14: 2.8, 15: 2.5,
+                16: 2.2, 17: 1.9, 18: 1.6, 19: 1.3, 20: 1.0,
+            }
+        if self.DRAW_PLACE_PROB_PLAT is None:
+            self.DRAW_PLACE_PROB_PLAT = {
+                1: 31.0, 2: 30.0, 3: 29.0, 4: 27.5, 5: 25.0,
+                6: 22.5, 7: 20.0, 8: 17.5, 9: 15.5, 10: 14.0,
+                11: 12.5, 12: 11.0, 13: 10.0, 14: 9.0, 15: 8.0,
+                16: 7.0, 17: 6.0, 18: 5.5, 19: 5.0, 20: 4.5,
+            }
+        # AUTOSTART (Trot) : numéros 4-5-6 favorisés, 1-2-3 risquent l'enfermement
+        if self.DRAW_WIN_PROB_AUTOSTART is None:
+            self.DRAW_WIN_PROB_AUTOSTART = {
+                1: 9.0,  2: 9.5,  3: 10.0, 4: 11.5, 5: 12.0, 6: 11.0,
+                7: 9.5,  8: 8.0,  9: 6.5,  10: 5.0,
+                # 2ème ligne (handicap derrière)
+                11: 3.5, 12: 2.8, 13: 2.3, 14: 1.9, 15: 1.6,
+                16: 1.3, 17: 1.1, 18: 0.9, 19: 0.7, 20: 0.5,
+            }
+        if self.DRAW_PLACE_PROB_AUTOSTART is None:
+            self.DRAW_PLACE_PROB_AUTOSTART = {
+                1: 24.0, 2: 25.0, 3: 27.0, 4: 30.0, 5: 30.5, 6: 28.5,
+                7: 24.5, 8: 21.0, 9: 18.0, 10: 14.5,
+                11: 11.0, 12: 9.0, 13: 7.5, 14: 6.0, 15: 5.0,
+                16: 4.2, 17: 3.5, 18: 3.0, 19: 2.5, 20: 2.0,
+            }
+
+
 CONFIG = Config()
 
+
 # =============================================================================
-# DATACLASSES & ENUMS
+# 2.  PARSING DE LA MUSIQUE (avec shrinkage bayésien)
 # =============================================================================
-
-class RaceType(str, Enum):
-    """Enumeration of race types"""
-    PLAT = "Plat"
-    ATTELE = "Attelé"
-    MONTE = "Monté"
-    HAIES = "Haies"
-    STEEPLE = "Steeple-chase"
-    CROSS = "Cross-country"
-
-
-@dataclass
-class HorseInputData:
-    """Validated horse input"""
-    number: int
-    name: str
-    age: int
-    sex: str
-    odds: float = 0.0
-    earnings: int = 0
-    driver_win_pct: float = 12.0
-    trainer_win_pct: float = 12.0
-    music: str = ""
-    draw: int = 0
-    
-    def validate(self) -> List[str]:
-        """Comprehensive validation"""
-        errors = []
-        
-        if not (1 <= self.number <= 30):
-            errors.append(f"N°{self.number}: numéro hors limites [1-30]")
-        if not self.name or len(self.name.strip()) == 0:
-            errors.append(f"N°{self.number}: nom obligatoire")
-        if not (CONFIG.MIN_AGE <= self.age <= CONFIG.MAX_AGE):
-            errors.append(f"N°{self.number}: âge {self.age} hors limites [{CONFIG.MIN_AGE}-{CONFIG.MAX_AGE}]")
-        if self.sex not in ["H", "F", "G", "M", "E"]:
-            errors.append(f"N°{self.number}: sexe invalide ({self.sex})")
-        if self.odds < 0:
-            errors.append(f"N°{self.number}: cote négative ({self.odds})")
-        if self.earnings < 0:
-            errors.append(f"N°{self.number}: gains négatifs ({self.earnings})")
-        if not (0 <= self.driver_win_pct <= 100):
-            errors.append(f"N°{self.number}: % driver invalide ({self.driver_win_pct})")
-        if not (0 <= self.trainer_win_pct <= 100):
-            errors.append(f"N°{self.number}: % entraîneur invalide ({self.trainer_win_pct})")
-        if self.draw < 0 or self.draw > 30:
-            errors.append(f"N°{self.number}: corde invalide ({self.draw})")
-        
-        return errors
-
-
-@dataclass
-class RaceInfo:
-    """Validated race information"""
-    race_type: str
-    distance: int
-    n_runners: int
-    discipline: str = ""
-    race_level: str = ""
-    date: Optional[str] = None
-    
-    def validate(self) -> List[str]:
-        """Validation"""
-        errors = []
-        
-        if self.race_type not in CONFIG.RACE_TYPES:
-            errors.append(f"Type de course invalide: {self.race_type}")
-        if not (CONFIG.MIN_DISTANCE <= self.distance <= CONFIG.MAX_DISTANCE):
-            errors.append(f"Distance {self.distance}m hors limites [{CONFIG.MIN_DISTANCE}-{CONFIG.MAX_DISTANCE}]m")
-        if not (CONFIG.MIN_RUNNERS <= self.n_runners <= CONFIG.MAX_RUNNERS):
-            errors.append(f"Nombre de partants {self.n_runners} invalide [{CONFIG.MIN_RUNNERS}-{CONFIG.MAX_RUNNERS}]")
-        
-        return errors
-
-
 @dataclass
 class MusicMetrics:
-    """Parsed music metrics"""
     score: float
     regularity: float
     races_count: int
@@ -195,126 +192,92 @@ class MusicMetrics:
     is_debutant: bool
     win_ratio: float
     podium_ratio: float
-    win_streak: int = 0
-    place_streak: int = 0
     consistency: float = 0.0
+    shrunk_score: float = 0.0    # score après shrinkage bayésien
+    shrunk_win_ratio: float = 0.0
 
 
-@dataclass
-class HorseFeatures:
-    """Complete feature vector for a horse"""
-    number: int
-    name: str
-    music: MusicMetrics
-    age_dist_factor: float
-    draw_factor: float
-    earnings_factor: float
-    human_factor: float
-    market_prob: float
-    # Original fields for UI
-    odds: float
-    sex: str
-    age: int
-    driver_win_pct: float
-    trainer_win_pct: float
-    earnings: int
-
-
-@dataclass
-class PredictionResult:
-    """Core prediction result"""
-    rank: int
-    number: int
-    name: str
-    model_prob: float
-    market_prob: float
-    place_prob: float
-    composite_score: float
-    value_ratio: float
-    is_value_bet: bool
-    kelly_bet_amount: Optional[float] = None
-    kelly_criterion: Optional[float] = None
-    roi_expected: Optional[float] = None
-    confidence_level: str = "Neutre"
-    odds: float = 0.0
-
-
-# =============================================================================
-# SECTION 1 — MUSIC PARSING (IMPROVED)
-# =============================================================================
-
-@lru_cache(maxsize=256)
-def parse_music(music_str: str) -> MusicMetrics:
+@lru_cache(maxsize=1024)
+def parse_music_v4(music_str: str) -> MusicMetrics:
     """
-    Enhanced music parsing with better validation and additional metrics
+    Parse la musique d'un cheval/driver/entraîneur.
+    Format type : '1a2a3a(23)4aDa5a' (chiffres + type de course)
+    Applique un shrinkage bayésien vers la moyenne population.
     """
-    if not music_str or music_str.strip() in ("", "-", "INEDIT", "INÉDIT", "N/A", "0"):
+    if (not music_str or
+            music_str.strip().upper() in ("", "-", "INEDIT", "INÉDIT", "N/A", "0")):
         return MusicMetrics(
-            score=3.0, regularity=0.50, races_count=0,
-            avg_position=5.0, best_position=10, recent_form=3.0,
-            trend=0.0, is_debutant=True, win_ratio=0.0, podium_ratio=0.0
+            score=CONFIG.POPULATION_MEAN_SCORE,
+            regularity=0.50, races_count=0, avg_position=5.0,
+            best_position=10, recent_form=CONFIG.POPULATION_MEAN_SCORE,
+            trend=0.0, is_debutant=True,
+            win_ratio=CONFIG.POPULATION_MEAN_WIN,
+            podium_ratio=0.30,
+            shrunk_score=CONFIG.POPULATION_MEAN_SCORE,
+            shrunk_win_ratio=CONFIG.POPULATION_MEAN_WIN,
         )
-    
     try:
-        clean = music_str.strip().upper()
-        clean = re.sub(r"[() ]", "", clean)
+        clean = re.sub(r"[()\s]", "", music_str.strip().upper())
         tokens = re.findall(r"([0-9DATRP])([AMPHSC]?)", clean)
-        
         if not tokens:
-            return _debutant_profile()
-        
-        raw_scores, numeric_positions, race_types_seen = [], [], []
-        
+            return parse_music_v4("")
+
+        raw_scores, numeric_positions = [], []
         for pos_char, rtype_char in tokens:
-            rtype = rtype_char.lower() if rtype_char else "a"
+            rtype = rtype_char.lower() if rtype_char else "x"
             pos_score = CONFIG.MUSIC_POSITION_SCORES.get(pos_char, 0.3)
             type_weight = CONFIG.MUSIC_RACE_TYPE_WEIGHTS.get(rtype, 1.0)
             raw_scores.append(pos_score * type_weight)
-            
             if pos_char.isdigit():
                 numeric_positions.append(int(pos_char) if pos_char != "0" else 10)
-            race_types_seen.append(rtype)
-        
+
         n = len(raw_scores)
-        raw_scores = np.array(raw_scores)
-        
-        # Exponential decay
-        decay = np.array([np.exp(-0.30 * i) for i in range(n)])
+        raw_scores_arr = np.array(raw_scores)
+
+        # --- Decay exponentiel : courses récentes pèsent plus ---
+        decay = np.exp(-0.30 * np.arange(n))
         decay /= decay.sum()
-        weighted_score = float(np.dot(raw_scores, decay))
-        
-        # Recent form (3 races)
+        weighted_score = float(np.dot(raw_scores_arr, decay))
+
+        # --- Forme récente (3 dernières) ---
         recent_n = min(3, n)
-        recent_decay = decay[:recent_n] / decay[:recent_n].sum()
-        recent_form = float(np.dot(raw_scores[:recent_n], recent_decay))
-        
-        # Regularity
+        rd = decay[:recent_n] / decay[:recent_n].sum()
+        recent_form = float(np.dot(raw_scores_arr[:recent_n], rd))
+
+        # --- Régularité ---
         if len(numeric_positions) >= 2:
             pos_std = float(np.std(numeric_positions))
             regularity = max(0.0, 1.0 - pos_std / 5.0)
         else:
+            pos_std = 3.0
             regularity = 0.50
-        
-        # Trend
+
+        # --- Tendance (forme récente vs ancienne) ---
         if n >= 4:
-            recent_avg = np.mean(raw_scores[:n // 2])
-            old_avg = np.mean(raw_scores[n // 2:])
+            recent_avg = np.mean(raw_scores_arr[: n // 2])
+            old_avg = np.mean(raw_scores_arr[n // 2:])
             trend = (recent_avg - old_avg) / (abs(old_avg) + 1e-9)
         else:
             trend = 0.0
-        
-        # Win/podium ratios
+
+        # --- Ratios ---
         win_count = sum(1 for p in numeric_positions if p == 1)
         podium_count = sum(1 for p in numeric_positions if p <= 3)
-        
-        # Streaks
-        win_streak = _calculate_streak(numeric_positions, 1)
-        place_streak = _calculate_streak(numeric_positions, 3)
-        
-        # Consistency
-        consistency = 1.0 - (pos_std / 10.0 if len(numeric_positions) >= 2 else 0.5)
-        consistency = max(0.0, min(1.0, consistency))
-        
+        win_ratio = win_count / max(n, 1)
+        podium_ratio = podium_count / max(n, 1)
+
+        # --- Consistance ---
+        consistency = max(0.0, min(1.0, 1.0 - pos_std / 10.0))
+
+        # ──────────────────────────────────────────────────────────
+        # SHRINKAGE BAYÉSIEN
+        # ──────────────────────────────────────────────────────────
+        # Formule : score_shrunk = (n*score + K*μ_pop) / (n+K)
+        # Plus n est petit, plus on tire vers la moyenne population
+        K = CONFIG.SHRINKAGE_K
+        shrunk_score = (n * weighted_score + K * CONFIG.POPULATION_MEAN_SCORE) / (n + K)
+        shrunk_win = (n * win_ratio + K * CONFIG.POPULATION_MEAN_WIN) / (n + K)
+
         return MusicMetrics(
             score=weighted_score,
             regularity=regularity,
@@ -324,823 +287,1179 @@ def parse_music(music_str: str) -> MusicMetrics:
             recent_form=recent_form,
             trend=float(trend),
             is_debutant=False,
-            win_ratio=win_count / max(n, 1),
-            podium_ratio=podium_count / max(n, 1),
-            win_streak=win_streak,
-            place_streak=place_streak,
+            win_ratio=win_ratio,
+            podium_ratio=podium_ratio,
             consistency=consistency,
+            shrunk_score=float(shrunk_score),
+            shrunk_win_ratio=float(shrunk_win),
         )
-    
     except Exception as e:
-        logger.warning(f"Music parsing error for '{music_str}': {str(e)}")
-        return _debutant_profile()
+        logger.warning(f"Music parsing error '{music_str}': {e}")
+        return parse_music_v4("")
 
-
-def _debutant_profile() -> MusicMetrics:
-    return MusicMetrics(
-        score=3.0, regularity=0.50, races_count=0,
-        avg_position=5.0, best_position=10, recent_form=3.0,
-        trend=0.0, is_debutant=True, win_ratio=0.0, podium_ratio=0.0
-    )
-
-
-def _calculate_streak(positions: List[int], threshold: int) -> int:
-    """Calculate recent streak of good finishes"""
-    if not positions:
-        return 0
-    streak = 0
-    for p in positions[:5]:  # Last 5 races
-        if p <= threshold:
-            streak += 1
-        else:
-            break
-    return streak
 
 # =============================================================================
-# SECTION 2 — FEATURE ENGINEERING (OPTIMIZED)
+# 3.  FACTEURS CONTEXTUELS
 # =============================================================================
-
-def age_distance_factor(age: int, distance: int, race_type: str) -> float:
-    """Age and distance adaptation with lookup tables for performance"""
-    age = max(CONFIG.MIN_AGE, min(age, CONFIG.MAX_AGE))
-    distance = max(CONFIG.MIN_DISTANCE, min(distance, CONFIG.MAX_DISTANCE))
-    
-    # Age-distance matrix optimization
-    factor_map = {
-        RaceType.PLAT: {
-            2: {1600: 1.0, 1800: 0.65, 3000: 0.55},
-            3: {1200: 1.05, 1600: 1.08, 2000: 1.06},
-            4: {1200: 1.10, 1600: 1.08, 2000: 1.05},
-            5: {1200: 1.12, 1600: 1.10, 2000: 1.08},
-        }
-    }
-    
-    if race_type == RaceType.PLAT:
-        if age == 2:
-            f = 1.0 if distance <= 1600 else 0.65
-        elif age == 3:
-            f = 1.05
-        elif 4 <= age <= 7:
-            f = 1.08 + (age - 4) * 0.01
-        elif age == 8:
-            f = 1.00
-        else:
-            f = max(0.70, 1.0 - (age - 8) * 0.05)
-    elif race_type in (RaceType.ATTELE, RaceType.MONTE):
-        if age <= 3:
-            f = 0.80
-        elif 4 <= age <= 9:
-            f = 1.05 + (age - 4) * 0.01
-        elif age == 10:
-            f = 1.00
-        else:
-            f = max(0.75, 1.0 - (age - 10) * 0.04)
-    else:  # Obstacles
-        if age <= 4:
-            f = 0.85
-        elif 5 <= age <= 10:
-            f = 1.05 + (age - 5) * 0.005
-        elif age == 11:
-            f = 1.00
-        else:
-            f = max(0.72, 1.0 - (age - 11) * 0.04)
-    
-    # Long distance bonus
-    if distance > 3000 and age >= 5:
-        f *= 1.04
-    
-    return float(f)
+def experience_factor(races_count: int) -> float:
+    """Coefficient multiplicateur 0.7-1.2 selon expérience."""
+    if not CONFIG.USE_EXPERIENCE_FACTOR:
+        return 1.0
+    if races_count <= 0:   return 0.70
+    if races_count <= 3:   return 0.82
+    if races_count <= 10:  return 1.00
+    if races_count <= 30:  return 1.10
+    return 1.18
 
 
-def draw_factor(draw: int, race_type: str, distance: int) -> float:
-    """Optimized draw impact calculation"""
-    if race_type != RaceType.PLAT or not draw or draw <= 0:
+def draw_factor_v4(draw: int, race_type: str, distance: int,
+                   depart_type: str = "Stalles (Plat)",
+                   track: str = "Bon") -> float:
+    """
+    Facteur de corde RAFFINÉ — gère plat ET autostart trot.
+    Retourne un score [-1.5, +1.5] à fusionner dans le composite.
+    """
+    if not draw or draw <= 0:
         return 0.0
-    
     draw = min(int(draw), 20)
-    base = CONFIG.DRAW_IMPACT_BASE.get(draw, -0.55)
-    
-    # Distance-dependent scaling
-    if distance <= 1400:
-        return base * 1.60
-    elif distance <= 1800:
-        return base * 1.00
-    else:
-        return base * 0.45
+
+    # ────────── PLAT (stalles) ──────────
+    if race_type == "Plat":
+        # 1-4 nettement favorisés, 5-7 OK, 8+ pénalisés
+        if draw <= 2:    base = 1.0
+        elif draw <= 4:  base = 0.7
+        elif draw <= 6:  base = 0.3
+        elif draw <= 9:  base = -0.2
+        elif draw <= 12: base = -0.6
+        else:            base = -1.0
+
+        # Modulation par distance
+        if distance <= 1300:   dist_mult = 1.6   # sprint : corde décisive
+        elif distance <= 1600: dist_mult = 1.3
+        elif distance <= 2000: dist_mult = 1.0
+        elif distance <= 2400: dist_mult = 0.7
+        else:                  dist_mult = 0.4
+
+        # Modulation terrain : sur terrain lourd, la corde peut devenir piège
+        if track in ("Lourd", "Très lourd", "Collant"):
+            base *= 0.3  # neutralise quasi l'effet corde
+        elif track in ("Souple", "Très souple"):
+            base *= 0.7
+
+        return base * dist_mult
+
+    # ────────── TROT AUTOSTART ──────────
+    if depart_type == "Autostart (Trot)" and race_type in ("Attelé", "Monté"):
+        # Premier rang (1-10), centre privilégié
+        if draw in (4, 5, 6):     base = 0.9
+        elif draw in (3, 7):      base = 0.5
+        elif draw in (2, 8):      base = 0.2
+        elif draw in (1, 9):      base = -0.2
+        elif draw == 10:          base = -0.5
+        elif draw <= 14:          base = -0.7
+        else:                     base = -1.0      # 2e ligne handicap
+
+        # Effet réduit sur longues distances
+        if distance >= 2700:
+            base *= 0.7
+        return base
+
+    # ────────── OBSTACLE / autres : effet quasi nul ──────────
+    return 0.0
 
 
-def earnings_factor(earnings: float, races_count: int) -> float:
-    """Earnings per race with better normalization"""
-    if not earnings or earnings <= 0 or races_count <= 0:
-        return 0.40
-    
-    epr = earnings / max(races_count, 1)
-    log_epr = np.log1p(epr)
-    # Better normalization based on typical earnings
-    return float(min(1.0, log_epr / np.log1p(20000)))
+def track_factor(track: str, race_type: str) -> float:
+    """Facteur multiplicateur global selon état du terrain (~1.0 neutre)."""
+    # Sur terrain lourd, la régularité prime sur la pointe de vitesse
+    if track in ("Lourd", "Très lourd"):  return 0.92
+    if track == "Collant":                return 0.95
+    if track in ("Souple", "Très souple"): return 0.98
+    return 1.0
 
 
-def human_factor(driver_pct: float, trainer_pct: float) -> float:
-    """Human factor with elite bonus"""
-    d = max(0.001, float(driver_pct or 12.0) / 100.0)
-    t = max(0.001, float(trainer_pct or 12.0) / 100.0)
-    
-    # Geometric mean
-    combined = float(np.sqrt(d * t))
-    
-    # Elite bonuses
-    if d >= 0.25 and t >= 0.20:
-        combined *= 1.30
-    elif d >= 0.22 or t >= 0.18:
-        combined *= 1.15
-    elif d >= 0.18 or t >= 0.15:
-        combined *= 1.08
-    
-    return combined
+def weight_factor(weight_kg: float, ref_weight: float = 56.0) -> float:
+    """
+    Plat uniquement : un cheval avec poids très élevé est désavantagé.
+    1 kg ≈ 1-2 longueurs.
+    """
+    if weight_kg <= 0:
+        return 1.0
+    delta = weight_kg - ref_weight
+    # 1 kg en plus = -2% performance
+    return max(0.85, min(1.15, 1.0 - 0.02 * delta))
 
 
-def market_prob(odds: float, n_runners: int) -> float:
-    """Implied probability from odds"""
-    if not odds or odds <= CONFIG.MIN_ODDS:
-        return 1.0 / max(n_runners, 2)
-    return 1.0 / float(odds)
+def rest_factor(days_since_last_race: int) -> float:
+    """
+    Jours de repos : optimum à 14-30 jours.
+    < 7 jours : fatigue ; > 60 jours : déconditionnement.
+    """
+    d = days_since_last_race
+    if d < 0:    return 1.0       # inconnu
+    if d <= 5:   return 0.85
+    if d <= 10:  return 0.95
+    if d <= 30:  return 1.00
+    if d <= 60:  return 0.95
+    if d <= 120: return 0.88
+    return 0.80
+
 
 # =============================================================================
-# SECTION 3 — FEATURE NORMALIZATION (VECTORIZED)
+# 4.  SCORE COMPOSITE (entrée du modèle softmax)
 # =============================================================================
+def get_weights_v4(race_type: str) -> Dict[str, float]:
+    """Poids normalisés par discipline. Total ≈ 1.0."""
+    if race_type == "Plat":
+        return {
+            # Cheval (45%)
+            "horse_score": 0.22, "horse_form": 0.10, "horse_regularity": 0.05,
+            "horse_trend": 0.04, "horse_win": 0.04,
+            # Jockey (20%)
+            "driver_score": 0.10, "driver_form": 0.05, "driver_win": 0.05,
+            # Entraîneur (15%)
+            "trainer_score": 0.08, "trainer_form": 0.04, "trainer_win": 0.03,
+            # Corde + contexte (20%)
+            "draw_factor": 0.12, "synergy": 0.03, "weight_adj": 0.03, "rest_adj": 0.02,
+        }
+    elif race_type in ("Attelé", "Monté"):
+        return {
+            # Cheval (35%)
+            "horse_score": 0.18, "horse_form": 0.08, "horse_regularity": 0.04,
+            "horse_trend": 0.03, "horse_win": 0.02,
+            # Driver/jockey (32%) — TRÈS important au trot
+            "driver_score": 0.16, "driver_form": 0.09, "driver_win": 0.07,
+            # Entraîneur (18%)
+            "trainer_score": 0.10, "trainer_form": 0.05, "trainer_win": 0.03,
+            # Corde autostart + contexte (15%)
+            "draw_factor": 0.08, "synergy": 0.03, "weight_adj": 0.00, "rest_adj": 0.04,
+        }
+    else:  # Obstacle (Haies, Steeple, Cross)
+        return {
+            "horse_score": 0.24, "horse_form": 0.12, "horse_regularity": 0.06,
+            "horse_trend": 0.04, "horse_win": 0.03,
+            "driver_score": 0.12, "driver_form": 0.06, "driver_win": 0.04,
+            "trainer_score": 0.12, "trainer_form": 0.06, "trainer_win": 0.04,
+            "draw_factor": 0.00, "synergy": 0.03, "weight_adj": 0.02, "rest_adj": 0.02,
+        }
 
-def normalize_features(features_list: List[Dict]) -> List[Dict]:
-    """Vectorized feature normalization"""
-    if not features_list:
-        return features_list
-    
-    df = pd.DataFrame(features_list)
-    norm_cols = [
-        "music_score", "recent_form", "regularity", "trend",
-        "win_ratio", "podium_ratio", "earnings_factor",
-        "age_dist_factor", "human_factor",
-    ]
-    
-    for col in norm_cols:
-        if col not in df.columns:
-            continue
-        
-        vals = df[col].values.astype(float)
-        
-        # Z-score
-        std = vals.std()
-        if std > 1e-9:
-            df[f"{col}_z"] = (vals - vals.mean()) / std
-        else:
-            df[f"{col}_z"] = 0.0
-        
-        # Min-Max [0,1]
-        mn, mx = vals.min(), vals.max()
-        if mx - mn > 1e-9:
-            df[f"{col}_norm"] = (vals - mn) / (mx - mn)
-        else:
-            df[f"{col}_norm"] = 0.5
-    
-    return df.to_dict("records")
 
-# =============================================================================
-# SECTION 4 — DYNAMIC WEIGHTS BY RACE TYPE
-# =============================================================================
+def composite_score_v4(feat: Dict, weights: Dict) -> float:
+    """Score linéaire pondéré. Sera ensuite passé en softmax."""
+    s = 0.0
 
-def get_race_weights(race_type: str) -> Dict[str, float]:
-    """Get feature weights optimized for race type"""
-    weights_map = {
-        RaceType.PLAT: {
-            "music_score": 0.28, "recent_form": 0.18, "regularity": 0.07,
-            "trend": 0.04, "win_ratio": 0.05, "podium_ratio": 0.04,
-            "earnings_factor": 0.08, "age_dist_factor": 0.07,
-            "draw_factor": 0.09, "human_factor": 0.10,
-        },
-        RaceType.ATTELE: {
-            "music_score": 0.30, "recent_form": 0.20, "regularity": 0.09,
-            "trend": 0.05, "win_ratio": 0.06, "podium_ratio": 0.04,
-            "earnings_factor": 0.08, "age_dist_factor": 0.04,
-            "draw_factor": 0.01, "human_factor": 0.13,
-        },
-        RaceType.MONTE: {
-            "music_score": 0.27, "recent_form": 0.18, "regularity": 0.09,
-            "trend": 0.05, "win_ratio": 0.06, "podium_ratio": 0.04,
-            "earnings_factor": 0.08, "age_dist_factor": 0.04,
-            "draw_factor": 0.00, "human_factor": 0.19,
-        },
-    }
-    
-    default_weights = {
-        "music_score": 0.26, "recent_form": 0.20, "regularity": 0.11,
-        "trend": 0.04, "win_ratio": 0.05, "podium_ratio": 0.05,
-        "earnings_factor": 0.08, "age_dist_factor": 0.06,
-        "draw_factor": 0.00, "human_factor": 0.15,
-    }
-    
-    return weights_map.get(race_type, default_weights)
+    s += weights["horse_score"]      * np.clip(feat["horse_score"], 0, 12)
+    s += weights["horse_form"]       * np.clip(feat["horse_form"], 0, 12)
+    s += weights["horse_regularity"] * np.clip(feat["horse_regularity"], 0, 1) * 10
+    s += weights["horse_trend"]      * (np.clip(feat["horse_trend"], -1, 1) + 1) * 5
+    s += weights["horse_win"]        * np.clip(feat["horse_win"], 0, 1) * 20
 
-# =============================================================================
-# SECTION 5 — COMPOSITE SCORE (VECTORIZED)
-# =============================================================================
+    s += weights["driver_score"] * np.clip(feat["driver_score"], 0, 12)
+    s += weights["driver_form"]  * np.clip(feat["driver_form"], 0, 12)
+    s += weights["driver_win"]   * np.clip(feat["driver_win"], 0, 1) * 20
 
-def composite_score(feat: Dict, weights: Dict) -> float:
-    """Composite score calculation"""
-    score = (
-        weights["music_score"] * feat.get("music_score", 3.0) +
-        weights["recent_form"] * feat.get("recent_form", 3.0) +
-        weights["regularity"] * feat.get("regularity", 0.5) * 10.0 +
-        weights["trend"] * (feat.get("trend", 0.0) + 1.0) * 5.0 +
-        weights["win_ratio"] * feat.get("win_ratio", 0.0) * 20.0 +
-        weights["podium_ratio"] * feat.get("podium_ratio", 0.0) * 10.0 +
-        weights["earnings_factor"] * feat.get("earnings_factor", 0.4) * 8.0 +
-        weights["age_dist_factor"] * feat.get("age_dist_factor", 1.0) * 5.0 +
-        weights["draw_factor"] * (feat.get("draw_factor", 0.0) + 1.0) * 5.0 +
-        weights["human_factor"] * feat.get("human_factor", 0.12) * 18.0
-    )
-    return max(0.01, score)
+    s += weights["trainer_score"] * np.clip(feat["trainer_score"], 0, 12)
+    s += weights["trainer_form"]  * np.clip(feat["trainer_form"], 0, 12)
+    s += weights["trainer_win"]   * np.clip(feat["trainer_win"], 0, 1) * 20
+
+    # Corde
+    if weights.get("draw_factor", 0) > 0:
+        s += weights["draw_factor"] * feat.get("draw_factor", 0) * 5
+
+    # Synergie cheval/jockey/entraîneur
+    h = np.clip(feat["horse_score"], 0.1, 12)
+    d = np.clip(feat["driver_score"], 0.1, 12)
+    t = np.clip(feat["trainer_score"], 0.1, 12)
+    syn = min(h, d, t) / max(h, d, t)
+    s += weights.get("synergy", 0) * syn * 10
+
+    # Ajustements multiplicatifs
+    s += weights.get("weight_adj", 0) * (feat.get("weight_factor", 1.0) - 1.0) * 50
+    s += weights.get("rest_adj",   0) * (feat.get("rest_factor",   1.0) - 1.0) * 50
+
+    # Bruit minimal pour briser les égalités
+    return max(0.05, s)
+
 
 # =============================================================================
-# SECTION 6 — SOFTMAX & CALIBRATION
+# 5.  MOTEUR PROBABILISTE — Softmax + Benter Blend + Plackett-Luce
 # =============================================================================
-
-def softmax(scores: np.ndarray, temperature: float = CONFIG.TEMPERATURE) -> np.ndarray:
-    """Numerically stable softmax"""
-    s = np.array(scores, dtype=float) / temperature
+def softmax_temp(scores: np.ndarray, T: float = 1.0) -> np.ndarray:
+    s = np.asarray(scores, dtype=float) / max(T, 0.05)
     s -= s.max()
-    e = np.exp(s)
-    return e / e.sum()
+    e = np.exp(np.clip(s, -50, 50))
+    p = e / (e.sum() + 1e-12)
+    return p
 
 
-def logit_calibration(raw_probs: np.ndarray) -> np.ndarray:
-    """Platt scaling calibration"""
+def remove_overround(odds: np.ndarray) -> np.ndarray:
+    """
+    Débiaise les cotes : normalisation + correction favori-outsider bias.
+    Selon la littérature (Whelan 2017, Snowberg-Wolfers 2010), les favoris
+    sont systématiquement sous-cotés et les outsiders sur-cotés.
+    On applique une transformation power : p_true ∝ p_raw^γ avec γ ∈ [1.05, 1.20]
+    """
     eps = 1e-9
-    logit = np.log((raw_probs + eps) / (1 - raw_probs + eps))
-    logit = logit - logit.mean() * 0.1
-    calibrated = 1.0 / (1.0 + np.exp(-logit))
-    return calibrated / calibrated.sum()
-
-
-def bayesian_blend(model_probs: np.ndarray, market_probs: np.ndarray,
-                   market_weight: float) -> np.ndarray:
-    """Log-odds Bayesian blending"""
-    mp = np.array(market_probs, dtype=float)
-    if mp.sum() < 1e-9:
-        mp = np.ones(len(model_probs)) / len(model_probs)
+    valid = odds > 1.01
+    if not valid.any():
+        return np.ones(len(odds)) / max(len(odds), 1)
+    p_raw = np.where(valid, 1.0 / np.maximum(odds, 1.01), eps)
+    if CONFIG.OVERROUND_CORRECTION:
+        gamma = 1.12  # ajusté empiriquement
+        p_corr = np.power(p_raw, gamma)
+        p_corr = p_corr / p_corr.sum()
     else:
-        mp /= mp.sum()
-    
+        p_corr = p_raw / p_raw.sum()
+    return p_corr
+
+
+def benter_blend(p_model: np.ndarray, p_market: np.ndarray,
+                 alpha: float = None, beta: float = None,
+                 race_type: str = None) -> np.ndarray:
+    """
+    Fusion Benter (1994) : p_final ∝ p_model^α · p_market^β
+    v4.1 : exposants par discipline si disponibles.
+    """
+    if alpha is None or beta is None:
+        if CONFIG.USE_DISCIPLINE_BLEND and race_type:
+            if race_type == "Plat":
+                alpha, beta = CONFIG.BENTER_AB_PLAT
+            elif race_type in ("Attelé", "Monté"):
+                alpha, beta = CONFIG.BENTER_AB_TROT
+            else:
+                alpha = CONFIG.BENTER_ALPHA
+                beta = CONFIG.BENTER_BETA
+        else:
+            if alpha is None: alpha = CONFIG.BENTER_ALPHA
+            if beta is None:  beta = CONFIG.BENTER_BETA
+    eps = 1e-12
+    log_blend = alpha * np.log(p_model + eps) + beta * np.log(p_market + eps)
+    log_blend -= log_blend.max()
+    p = np.exp(log_blend)
+    return p / p.sum()
+
+
+def platt_calibrate(probs: np.ndarray, race_type: str = None) -> np.ndarray:
+    """
+    Platt scaling : p_cal = sigmoid(a * logit(p) + b)
+    Paramètres (a, b) calibrés sur 12 courses réelles par discipline.
+
+    En Plat (a=0.45, b=-1.30) : forte compression, le modèle est sur-confiant.
+    En Trot (a=1.20, b=+0.40) : légère amplification.
+    """
+    if not CONFIG.USE_PLATT_CALIBRATION:
+        return probs
+    if race_type == "Plat":
+        a, b = CONFIG.PLATT_PLAT
+    elif race_type in ("Attelé", "Monté"):
+        a, b = CONFIG.PLATT_TROT
+    else:
+        a, b = CONFIG.PLATT_GLOBAL
     eps = 1e-9
-    lo_model = np.log((model_probs + eps) / (1 - model_probs + eps))
-    lo_market = np.log((mp + eps) / (1 - mp + eps))
-    
-    lo_blend = (1 - market_weight) * lo_model + market_weight * lo_market
-    blended = 1.0 / (1.0 + np.exp(-lo_blend))
-    return blended / blended.sum()
+    p = np.clip(probs, eps, 1 - eps)
+    logit_p = np.log(p / (1 - p))
+    p_cal = 1.0 / (1.0 + np.exp(-np.clip(a * logit_p + b, -50, 50)))
+    s = p_cal.sum()
+    return p_cal / s if s > 0 else probs
 
-# =============================================================================
-# SECTION 7 — MONTE CARLO (OPTIMIZED & PARALLEL-READY)
-# =============================================================================
 
-def monte_carlo(features_list: List[Dict], weights: Dict, 
-                n_iter: int = CONFIG.MC_ITERATIONS,
-                market_weight: float = CONFIG.MARKET_WEIGHT) -> Dict:
+def plackett_luce_simulate(strengths: np.ndarray, n_iter: int,
+                            noise: float = 0.18) -> np.ndarray:
     """
-    Optimized Monte Carlo with better noise modeling
+    Simule n_iter ordres d'arrivée par modèle Plackett-Luce (Harville).
+    
+    Optimisation clé : le bruit est appliqué également à chaque tirage
+    séquentiel, ce qui améliore drastiquement la couverture des positions
+    éloignées (évite la sur-concentration sur le même top-5).
     """
-    n = len(features_list)
-    all_probs = np.zeros((n_iter, n))
-    win_counts = np.zeros(n)
-    
-    # Pre-calculate base scores
-    base_scores = np.array([composite_score(f, weights) for f in features_list])
-    
-    # Pre-calculate noise multipliers
-    noise_factors = np.array([
-        2.20 if f.get("is_debutant", False) else
-        1.60 if f.get("regularity", 0.5) < 0.30 else
-        0.70 if f.get("regularity", 0.5) > 0.80 else
-        1.00
-        for f in features_list
-    ])
-    
-    # MC iterations
+    n = len(strengths)
+    orders = np.zeros((n_iter, n), dtype=np.int32)
+    base_log = np.log(np.maximum(strengths, 1e-9))
     for it in range(n_iter):
-        # Vectorized noise generation
-        noises = np.random.normal(0, CONFIG.NOISE_BASE * noise_factors, n)
-        noisy = base_scores * np.exp(noises)
-        noisy = np.maximum(noisy, 0.001)
-        
-        probs = softmax(noisy)
-        all_probs[it] = probs
-        
-        winner = np.random.choice(n, p=probs)
-        win_counts[winner] += 1
-    
-    # Calculate statistics
-    simulated_probs = win_counts / n_iter
-    mean_probs = all_probs.mean(axis=0)
-    std_probs = all_probs.std(axis=0)
-    vol_per_horse = std_probs / (mean_probs + 1e-9)
-    
-    # Place probabilities (top 2)
-    place_counts = np.zeros(n)
-    for it in range(n_iter):
-        top2 = np.argsort(-all_probs[it])[:2]
-        place_counts[top2] += 1
-    place_probs = place_counts / n_iter
-    
-    return {
-        "simulated_probs": simulated_probs,
-        "mean_probs": mean_probs,
-        "std_probs": std_probs,
-        "vol_per_horse": vol_per_horse,
-        "place_probs": place_probs,
-    }
+        # Bruit appliqué sur les log-forces
+        noisy = base_log + np.random.normal(0, noise, n)
+        # Tirage Plackett-Luce séquentiel via Gumbel trick (plus rapide & exact)
+        # G ~ Gumbel(0,1) puis ordre = argsort(-(noisy + G))
+        gumbel = -np.log(-np.log(np.random.uniform(1e-12, 1-1e-12, n)))
+        scores_perturbed = noisy + gumbel
+        orders[it] = np.argsort(-scores_perturbed)
+    return orders
+
 
 # =============================================================================
-# SECTION 8 — KELLY CRITERION FOR BANKROLL MANAGEMENT
+# 6.  CORRECTION EMPIRIQUE (corde + expérience)
 # =============================================================================
+def empirical_win_prob(draw: int, race_type: str, distance: int,
+                       depart_type: str) -> float:
+    """Probabilité empirique de victoire en fraction [0, 1]."""
+    if draw <= 0:
+        return 0.10
+    draw = min(draw, 20)
+    if race_type == "Plat":
+        base = CONFIG.DRAW_WIN_PROB_PLAT.get(draw, 2.0) / 100.0
+        # Modulation distance
+        if distance <= 1300:   m = 1.30
+        elif distance <= 1600: m = 1.15
+        elif distance <= 2000: m = 1.00
+        elif distance <= 2400: m = 0.85
+        else:                  m = 0.70
+        return base * m
+    elif depart_type == "Autostart (Trot)":
+        base = CONFIG.DRAW_WIN_PROB_AUTOSTART.get(draw, 2.0) / 100.0
+        return base
+    return 0.10
 
-def calculate_kelly_bet(prob: float, odds: float, kelly_fraction: float = CONFIG.KELLY_FRACTION) -> Tuple[float, float]:
+
+def empirical_correction(p_model: np.ndarray, draws: List[int],
+                         race_type: str, distance: int, depart_type: str,
+                         exp_factors: np.ndarray, weight: float = None) -> np.ndarray:
     """
-    Kelly Criterion: f* = (p*b - q) / b
-    where p = win probability, q = 1-p, b = odds - 1
-    
-    Returns: (kelly_criterion, bet_fraction_of_bankroll)
+    Mélange convexe entre proba modèle et proba empirique pondérée par expérience.
     """
-    if odds <= CONFIG.MIN_KELLY_ODDS or prob < 0.10:
+    if weight is None:
+        weight = CONFIG.EMPIRICAL_WEIGHT
+    n = len(p_model)
+    p_emp = np.zeros(n)
+    for i, d in enumerate(draws):
+        p_emp[i] = empirical_win_prob(d, race_type, distance, depart_type) * exp_factors[i]
+    if p_emp.sum() < 1e-9:
+        return p_model
+    p_emp /= p_emp.sum()
+    p_blend = (1 - weight) * p_model + weight * p_emp
+    return p_blend / p_blend.sum()
+
+
+# =============================================================================
+# 7.  KELLY & VALUE
+# =============================================================================
+def kelly_bet(prob: float, odds: float, volatility: float = 1.0,
+              fraction: float = None) -> Tuple[float, float]:
+    """
+    Kelly fractionnaire dynamique :
+    - Réduit la mise si volatilité élevée
+    - Cap absolu à CONFIG.MAX_KELLY_STAKE
+    Retourne (kelly_pur, kelly_recommandé).
+    """
+    if fraction is None:
+        fraction = CONFIG.KELLY_FRACTION
+    if odds <= CONFIG.MIN_KELLY_ODDS or prob < 0.04:
         return 0.0, 0.0
-    
-    q = 1.0 - prob
-    b = odds - 1.0
-    
-    kelly = (prob * b - q) / b
-    kelly = max(0.0, kelly)  # No negative Kelly
-    
-    # Fractional Kelly for safety
-    fractional_kelly = kelly * kelly_fraction
-    
-    return float(kelly), float(fractional_kelly)
+    b = odds - 1
+    q = 1 - prob
+    if b <= 0:
+        return 0.0, 0.0
+    k = (prob * b - q) / b
+    k = max(0.0, k)
+    # Ajustement volatilité
+    vol_adj = 1.0 / (1.0 + max(0, volatility - 1.0))
+    k_reco = min(k * fraction * vol_adj, CONFIG.MAX_KELLY_STAKE)
+    return float(k), float(k_reco)
 
 
-def calculate_roi(prob: float, odds: float, bet_amount: float) -> float:
-    """Calculate expected ROI"""
-    if bet_amount <= 0 or odds <= 1.0:
+def expected_roi(prob: float, odds: float, stake: float = 100.0) -> float:
+    if stake <= 0 or odds <= 1.0:
         return 0.0
-    
-    expected_winnings = bet_amount * odds * prob
-    expected_loss = bet_amount * (1 - prob)
-    expected_value = expected_winnings - expected_loss
-    
-    return (expected_value / bet_amount) * 100.0
+    ev = stake * (odds * prob - 1.0)
+    return (ev / stake) * 100
+
 
 # =============================================================================
-# SECTION 9 — MAIN ENGINE
+# 8.  PARIS EXOTIQUES (via Plackett-Luce simulations)
 # =============================================================================
+# ──────────────────────────────────────────────────────────────────────────
+# COTES PMU RÉALISTES — calibration empirique
+# ──────────────────────────────────────────────────────────────────────────
+# La cote PMU réelle pour un pari combiné est proche de 1/p × (1 - takeout)
+# où takeout PMU ≈ 25-30% pour les exotiques. Donc :
+#   cote_PMU ≈ (1 / p) × 0.72
+# On applique cette formule + bornes raisonnables.
+PMU_TAKEOUT = {
+    "couple_gagnant": 0.74,
+    "couple_place":   0.78,
+    "trio_ordre":     0.72,
+    "trio_desordre":  0.74,
+    "quarte_desordre": 0.71,
+    "quinte_desordre": 0.68,
+}
 
-def run_engine(race_info: Dict, horses: List[Dict],
-               mc_iter: int = CONFIG.MC_ITERATIONS,
-               market_weight: float = CONFIG.MARKET_WEIGHT,
-               value_threshold: float = CONFIG.VALUE_THRESHOLD) -> Dict:
+def _pmu_estimated_odds(p: float, bet_type: str,
+                        min_odds: float, max_odds: float) -> float:
+    """Estime la cote PMU réelle pour un pari combiné."""
+    if p <= 0:
+        return max_odds
+    payout_rate = PMU_TAKEOUT.get(bet_type, 0.72)
+    raw = (1.0 / p) * payout_rate
+    return float(np.clip(raw, min_odds, max_odds))
+
+
+def analyze_exotics(results: List[Dict], orders: np.ndarray,
+                     top_n: int = 10) -> Dict[str, List[Dict]]:
     """
-    Main prediction engine with validation and error handling
+    Calcule les meilleurs paris exotiques avec cotes PMU réalistes.
+    Tri par ROI espéré décroissant.
     """
-    start_time = time.time()
-    
-    try:
-        # Validation
-        n_runners = len(horses)
-        race_info["n_runners"] = n_runners
-        
-        race_data = RaceInfo(
-            race_type=race_info.get("race_type", "Plat"),
-            distance=int(race_info.get("distance", 1600)),
-            n_runners=n_runners,
-            discipline=race_info.get("discipline", ""),
-            race_level=race_info.get("race_level", ""),
+    n_iter, n_horses = orders.shape
+    output = {"couple_gagnant": [], "couple_place": [],
+              "trio_ordre": [], "trio_desordre": [],
+              "quarte_desordre": [], "quinte_desordre": []}
+
+    if n_horses < 3:
+        return output
+
+    # ──────── COUPLÉ GAGNANT (1-2 ordre exact) ────────
+    cg = {}
+    for it in range(n_iter):
+        key = (int(orders[it, 0]), int(orders[it, 1]))
+        cg[key] = cg.get(key, 0) + 1
+    for (i, j), c in cg.items():
+        p = c / n_iter
+        if p < 0.005: continue
+        est_odds = _pmu_estimated_odds(p, "couple_gagnant", 3.0, 400.0)
+        output["couple_gagnant"].append({
+            "combo": f"{results[i]['number']}-{results[j]['number']}",
+            "names": f"{results[i]['name'][:8]} → {results[j]['name'][:8]}",
+            "prob_pct": round(p * 100, 2),
+            "estimated_odds": round(est_odds, 1),
+            "expected_roi": round(expected_roi(p, est_odds, 10), 1),
+        })
+
+    # ──────── COUPLÉ PLACÉ (2 dans top 3, désordre) ────────
+    cp = {}
+    for it in range(n_iter):
+        top3 = sorted(orders[it, :3].tolist())
+        for a, b in combinations(top3, 2):
+            key = (int(a), int(b))
+            cp[key] = cp.get(key, 0) + 1
+    for (i, j), c in cp.items():
+        p = c / n_iter
+        if p < 0.02: continue
+        est_odds = _pmu_estimated_odds(p, "couple_place", 1.8, 80.0)
+        output["couple_place"].append({
+            "combo": f"{results[i]['number']}-{results[j]['number']}",
+            "names": f"{results[i]['name'][:8]} & {results[j]['name'][:8]}",
+            "prob_pct": round(p * 100, 2),
+            "estimated_odds": round(est_odds, 1),
+            "expected_roi": round(expected_roi(p, est_odds, 10), 1),
+        })
+
+    # ──────── TRIO ORDRE ────────
+    to_dict = {}
+    for it in range(n_iter):
+        key = tuple(int(x) for x in orders[it, :3])
+        to_dict[key] = to_dict.get(key, 0) + 1
+    for key, c in to_dict.items():
+        p = c / n_iter
+        if p < 0.003: continue
+        est_odds = _pmu_estimated_odds(p, "trio_ordre", 10.0, 2000.0)
+        i, j, k = key
+        output["trio_ordre"].append({
+            "combo": f"{results[i]['number']}-{results[j]['number']}-{results[k]['number']}",
+            "prob_pct": round(p * 100, 3),
+            "estimated_odds": round(est_odds, 1),
+            "expected_roi": round(expected_roi(p, est_odds, 10), 1),
+        })
+
+    # ──────── TRIO DÉSORDRE ────────
+    td_dict = {}
+    for it in range(n_iter):
+        key = tuple(sorted(int(x) for x in orders[it, :3]))
+        td_dict[key] = td_dict.get(key, 0) + 1
+    for key, c in td_dict.items():
+        p = c / n_iter
+        if p < 0.01: continue
+        est_odds = _pmu_estimated_odds(p, "trio_desordre", 4.0, 500.0)
+        i, j, k = key
+        output["trio_desordre"].append({
+            "combo": f"{results[i]['number']}-{results[j]['number']}-{results[k]['number']}",
+            "prob_pct": round(p * 100, 2),
+            "estimated_odds": round(est_odds, 1),
+            "expected_roi": round(expected_roi(p, est_odds, 10), 1),
+        })
+
+    # ──────── QUARTÉ+ DÉSORDRE ────────
+    if n_horses >= 4:
+        q4 = {}
+        for it in range(n_iter):
+            key = tuple(sorted(int(x) for x in orders[it, :4]))
+            q4[key] = q4.get(key, 0) + 1
+        for key, c in q4.items():
+            p = c / n_iter
+            if p < 0.005: continue
+            est_odds = _pmu_estimated_odds(p, "quarte_desordre", 12.0, 5000.0)
+            output["quarte_desordre"].append({
+                "combo": "-".join(str(results[i]['number']) for i in key),
+                "prob_pct": round(p * 100, 3),
+                "estimated_odds": round(est_odds, 1),
+                "expected_roi": round(expected_roi(p, est_odds, 5), 1),
+            })
+
+    # ──────── QUINTÉ+ DÉSORDRE ────────
+    if n_horses >= 5:
+        q5 = {}
+        for it in range(n_iter):
+            key = tuple(sorted(int(x) for x in orders[it, :5]))
+            q5[key] = q5.get(key, 0) + 1
+        for key, c in q5.items():
+            p = c / n_iter
+            if p < 0.002: continue
+            est_odds = _pmu_estimated_odds(p, "quinte_desordre", 25.0, 30000.0)
+            output["quinte_desordre"].append({
+                "combo": "-".join(str(results[i]['number']) for i in key),
+                "prob_pct": round(p * 100, 4),
+                "estimated_odds": round(est_odds, 1),
+                "expected_roi": round(expected_roi(p, est_odds, 2), 1),
+            })
+
+    # Tri : (a) ROI positifs d'abord, (b) puis par probabilité décroissante
+    # Cela évite d'afficher des combos peu probables même si ROI équivalent
+    for k in output:
+        # Plafonner les ROI affichés pour rester réaliste (max +300%)
+        for r in output[k]:
+            if r["expected_roi"] > 300:
+                r["expected_roi_raw"] = r["expected_roi"]
+                r["expected_roi"] = 300.0
+                r["flag"] = "⚠️ ROI très élevé (cap +300%)"
+        output[k].sort(
+            key=lambda x: (x["expected_roi"], x["prob_pct"]),
+            reverse=True
         )
-        
-        race_errors = race_data.validate()
-        if race_errors:
-            raise ValueError("\n".join(race_errors))
-        
-        # Validate horses
-        horse_validated = []
-        for h in horses:
-            horse_data = HorseInputData(**h)
-            horse_errors = horse_data.validate()
-            if horse_errors:
-                raise ValueError(f"Partant N°{h.get('number')}: " + horse_errors[0])
-            horse_validated.append(h)
-        
-        # Feature engineering
-        feats = []
-        for h in horse_validated:
-            music = parse_music(h.get("music", ""))
-            
-            feat = {
+        output[k] = output[k][:top_n]
+        for i, r in enumerate(output[k]):
+            r["rank"] = i + 1
+    return output
+
+
+def best_place_bet(results: List[Dict], n_runners: int) -> Optional[Dict]:
+    """Trouve le meilleur cheval pour le pari Placé."""
+    if n_runners <= 4:
+        place_factor = CONFIG.PLACE_ODDS_FACTOR["small"]
+    elif n_runners <= 7:
+        place_factor = 0.45
+    elif n_runners <= 15:
+        place_factor = CONFIG.PLACE_ODDS_FACTOR["medium"]
+    else:
+        place_factor = CONFIG.PLACE_ODDS_FACTOR["large"]
+
+    best = None
+    best_roi = -np.inf
+    for r in results:
+        pp = r["place_prob"] / 100
+        if pp < 0.12: continue
+        wo = r["odds"]
+        if wo < 1.5: continue
+        place_odds = max(1.20, wo * place_factor)
+        roi = expected_roi(pp, place_odds, 100)
+        if roi > best_roi:
+            best_roi = roi
+            k_pur, k_reco = kelly_bet(pp, place_odds, volatility=1.0)
+            best = {
+                "number": r["number"],
+                "name": r["name"],
+                "win_prob": r["win_prob"],
+                "place_prob": r["place_prob"],
+                "estimated_place_odds": round(place_odds, 2),
+                "expected_roi_place": round(roi, 1),
+                "kelly_pure": round(k_pur, 4),
+                "kelly_recommended": round(k_reco, 4),
+            }
+    return best
+
+
+# =============================================================================
+# 9.  MOTEUR PRINCIPAL — RaceEngine v4
+# =============================================================================
+class RaceEngine:
+    """Encapsule toute la logique de prédiction pour une course."""
+
+    def __init__(self, race_info: Dict, horses: List[Dict]):
+        self.race_info = race_info
+        self.horses = horses
+        self.n = len(horses)
+        self.race_type = race_info.get("race_type", "Plat")
+        self.distance = int(race_info.get("distance", 1600))
+        self.track = race_info.get("track", "Bon")
+        self.depart_type = race_info.get("depart_type", "Stalles (Plat)")
+
+    # ── 9.1 Préparation des features ───────────────────────────────────
+    def _build_features(self) -> Tuple[List[Dict], List[int], np.ndarray]:
+        feats, draws, exp_factors = [], [], []
+        for h in self.horses:
+            m_h = parse_music_v4(h.get("horse_music", ""))
+            m_d = parse_music_v4(h.get("driver_music", ""))
+            m_t = parse_music_v4(h.get("trainer_music", ""))
+
+            exp_h = experience_factor(m_h.races_count)
+            exp_d = experience_factor(m_d.races_count)
+            exp_t = experience_factor(m_t.races_count)
+            combined_exp = (exp_h * exp_d * exp_t) ** (1/3)
+            exp_factors.append(combined_exp)
+
+            draw = h.get("draw", 0)
+            draws.append(draw)
+
+            df = draw_factor_v4(draw, self.race_type, self.distance,
+                                 self.depart_type, self.track)
+            wf = weight_factor(h.get("weight", 0)) if self.race_type == "Plat" else 1.0
+            rf = rest_factor(h.get("days_rest", -1))
+            tf = track_factor(self.track, self.race_type)
+
+            # On utilise les scores SHRUNK (régression vers moyenne)
+            feats.append({
                 "number": h.get("number", 0),
                 "name": h.get("name", ""),
                 "odds": float(h.get("odds", 0)),
-                "music_score": music.score,
-                "recent_form": music.recent_form,
-                "regularity": music.regularity,
-                "trend": music.trend,
-                "win_ratio": music.win_ratio,
-                "podium_ratio": music.podium_ratio,
-                "races_count": music.races_count,
-                "is_debutant": music.is_debutant,
-                "age_dist_factor": age_distance_factor(
-                    h.get("age", 4), race_data.distance, race_data.race_type
-                ),
-                "draw_factor": draw_factor(h.get("draw", 0), race_data.race_type, race_data.distance),
-                "earnings_factor": earnings_factor(h.get("earnings", 0), music.races_count),
-                "human_factor": human_factor(h.get("driver_win_pct", 12), h.get("trainer_win_pct", 12)),
-                "market_prob": market_prob(h.get("odds", 0), n_runners),
-                # Original fields
-                "driver_win_pct": h.get("driver_win_pct", 12),
-                "trainer_win_pct": h.get("trainer_win_pct", 12),
-                "earnings": h.get("earnings", 0),
-                "age": h.get("age", 4),
-                "sex": h.get("sex", ""),
-                "draw": h.get("draw", 0),
-                "music_consistency": music.consistency,
-                "win_streak": music.win_streak,
-            }
-            feats.append(feat)
-        
-        # Normalize
-        feats = normalize_features(feats)
-        
-        # Weights
-        weights = get_race_weights(race_data.race_type)
-        
-        # Scores
-        scores = np.array([composite_score(f, weights) for f in feats])
-        
-        # Probabilities
-        sm_probs = softmax(scores)
-        cal_probs = logit_calibration(sm_probs)
-        
-        # Market
-        raw_mkt = np.array([f["market_prob"] for f in feats])
-        if raw_mkt.sum() < 1e-9:
-            raw_mkt = np.ones(n_runners) / n_runners
-        norm_mkt = raw_mkt / raw_mkt.sum()
-        
-        # Bayesian blend
-        has_odds = any(h.get("odds", 0) > CONFIG.MIN_KELLY_ODDS for h in horses)
-        if has_odds:
-            bayes_probs = bayesian_blend(cal_probs, norm_mkt, market_weight)
+                "horse_score": m_h.shrunk_score * exp_h * tf,
+                "horse_form": m_h.recent_form,
+                "horse_regularity": m_h.regularity,
+                "horse_trend": m_h.trend,
+                "horse_win": m_h.shrunk_win_ratio,
+                "horse_is_debutant": m_h.is_debutant,
+                "driver_score": m_d.shrunk_score * exp_d,
+                "driver_form": m_d.recent_form,
+                "driver_win": m_d.shrunk_win_ratio,
+                "trainer_score": m_t.shrunk_score * exp_t,
+                "trainer_form": m_t.recent_form,
+                "trainer_win": m_t.shrunk_win_ratio,
+                "draw_factor": df,
+                "weight_factor": wf,
+                "rest_factor": rf,
+            })
+        return feats, draws, np.array(exp_factors)
+
+    # ── 9.2 Prédiction complète ────────────────────────────────────────
+    def predict(self, mc_iter: int = None, market_weight: float = None,
+                value_threshold: float = None) -> Dict[str, Any]:
+        t0 = time.time()
+        if mc_iter is None:        mc_iter = CONFIG.MC_ITERATIONS
+        if market_weight is None:  market_weight = CONFIG.MARKET_WEIGHT
+        if value_threshold is None: value_threshold = CONFIG.VALUE_THRESHOLD
+
+        feats, draws, exp_factors = self._build_features()
+        weights = get_weights_v4(self.race_type)
+        scores = np.array([composite_score_v4(f, weights) for f in feats])
+        if scores.std() < 1e-6:
+            scores += np.random.normal(0, 0.05, self.n)
+
+        # === ÉTAPE 1 : Probabilité modèle pure (softmax) ===
+        p_model_raw = softmax_temp(scores, T=CONFIG.TEMPERATURE)
+
+        # === ÉTAPE 2 : Correction empirique (corde + expérience) ===
+        p_model = empirical_correction(p_model_raw, draws, self.race_type,
+                                         self.distance, self.depart_type,
+                                         exp_factors)
+
+        # === ÉTAPE 3 : Marché débiaisé ===
+        odds_arr = np.array([f["odds"] for f in feats])
+        has_market = (odds_arr > 1.5).sum() >= self.n * 0.5
+        if has_market:
+            p_market = remove_overround(odds_arr)
         else:
-            bayes_probs = cal_probs
-        
-        # Monte Carlo
-        mc = monte_carlo(feats, weights, n_iter=mc_iter, market_weight=market_weight)
-        
-        # Final blend (55% Bayesian + 45% MC)
-        final_probs = 0.55 * bayes_probs + 0.45 * mc["mean_probs"]
-        final_probs /= final_probs.sum()
-        
-        # Z-score
-        prob_z = zscore(final_probs)
-        
-        # Results
+            p_market = np.ones(self.n) / self.n
+
+        # === ÉTAPE 3.5 (v4.1) : Platt scaling du modèle ===
+        p_model = platt_calibrate(p_model, race_type=self.race_type)
+
+        # === ÉTAPE 4 : Benter Blend (v4.1 : discipline-aware) ===
+        if has_market and market_weight > 0:
+            p_final = benter_blend(p_model, p_market,
+                                    race_type=self.race_type)
+            if abs(market_weight - 0.50) > 0.05:
+                p_final = (1 - market_weight) * p_model + market_weight * p_final
+                p_final /= p_final.sum()
+        else:
+            p_final = p_model
+
+        # === ÉTAPE 5 : Simulation Plackett-Luce pour exotiques + place ===
+        # On reconstruit des forces compatibles avec p_final
+        strengths = p_final * 100  # échelle arbitraire
+        orders = plackett_luce_simulate(strengths, mc_iter, noise=CONFIG.NOISE_BASE)
+
+        # Probabilités de place (top 3) via PL
+        place_counts = np.zeros(self.n)
+        win_counts = np.zeros(self.n)
+        for it in range(mc_iter):
+            win_counts[orders[it, 0]] += 1
+            for k in range(3):
+                place_counts[orders[it, k]] += 1
+        p_place_mc = place_counts / mc_iter
+        p_win_mc = win_counts / mc_iter
+
+        # Volatilité : écart entre p_final et p_win_mc
+        volatility = np.abs(p_final - p_win_mc) / (p_final + 1e-9)
+
+        # === ÉTAPE 6 : Construction des résultats ===
         results = []
-        for i, (feat, horse) in enumerate(zip(feats, horses)):
-            ratio = final_probs[i] / (norm_mkt[i] + 1e-9)
-            is_value = ratio >= value_threshold and final_probs[i] >= 0.04
-            
-            kelly, kelly_frac = calculate_kelly_bet(final_probs[i], horse.get("odds", 2.0))
-            roi = calculate_roi(final_probs[i], horse.get("odds", 2.0), 100.0)
-            
-            result = {
+        # Overround
+        if has_market:
+            raw_or = sum(1.0 / o for o in odds_arr if o > 1.01)
+            overround_pct = round((raw_or - 1.0) * 100, 1)
+        else:
+            overround_pct = None
+
+        # Seuil de value dynamique
+        if overround_pct is not None and overround_pct > 0:
+            dyn_value_th = max(value_threshold, 1.0 + overround_pct / 100 * 1.2)
+        else:
+            dyn_value_th = value_threshold
+
+        for i, (feat, horse) in enumerate(zip(feats, self.horses)):
+            ratio = p_final[i] / (p_market[i] + 1e-9)
+            cote = horse.get("odds", 2.0)
+            # v4.1 : filtre value bet par cote (sweet spot [5, 10])
+            is_value = (
+                ratio >= dyn_value_th
+                and p_final[i] >= 0.04
+                and CONFIG.VALUE_COTE_MIN <= cote <= CONFIG.VALUE_COTE_MAX
+            )
+            k_pur, k_reco = kelly_bet(p_final[i], cote,
+                                       volatility=1 + volatility[i])
+            roi = expected_roi(p_final[i], cote)
+
+            results.append({
                 "rank": 0,
                 "number": horse.get("number", i + 1),
                 "name": horse.get("name", f"Cheval {i+1}"),
                 "odds": float(horse.get("odds", 0)),
-                "sex": horse.get("sex", ""),
-                "age": horse.get("age", 4),
-                "model_prob": round(float(final_probs[i]) * 100, 2),
-                "market_prob": round(float(norm_mkt[i]) * 100, 2),
-                "place_prob": round(float(mc["place_probs"][i]) * 100, 2),
-                "composite_score": round(float(scores[i]), 4),
-                "music_score": round(feat.get("music_score", 0.0), 2),
-                "recent_form": round(feat.get("recent_form", 0.0), 2),
-                "regularity": round(feat.get("regularity", 0.0), 2),
-                "trend": round(feat.get("trend", 0.0), 3),
-                "win_ratio": round(feat.get("win_ratio", 0.0), 3),
-                "podium_ratio": round(feat.get("podium_ratio", 0.0), 3),
-                "human_factor": round(feat.get("human_factor", 0.0), 4),
-                "earnings_factor": round(feat.get("earnings_factor", 0.0), 3),
-                "draw_factor": round(feat.get("draw_factor", 0.0), 3),
+                "win_prob": round(float(p_final[i]) * 100, 2),
+                "win_prob_model": round(float(p_model[i]) * 100, 2),
+                "win_prob_market": round(float(p_market[i]) * 100, 2),
+                "place_prob": round(float(p_place_mc[i]) * 100, 2),
+                "composite_score": round(float(scores[i]), 3),
                 "value_ratio": round(float(ratio), 2),
-                "is_value_bet": is_value,
-                "is_debutant": feat.get("is_debutant", False),
-                "mc_std": round(float(mc["std_probs"][i]) * 100, 2),
-                "prob_z": round(float(prob_z[i]), 3),
-                "driver_win_pct": feat.get("driver_win_pct", 12),
-                "trainer_win_pct": feat.get("trainer_win_pct", 12),
-                "earnings": feat.get("earnings", 0),
-                "kelly_criterion": round(kelly, 4),
-                "kelly_bet_fraction": round(kelly_frac, 4),
+                "is_value_bet": bool(is_value),
+                "kelly_pure": round(k_pur, 4),
+                "kelly_recommended": round(k_reco, 4),
                 "expected_roi": round(roi, 2),
-                "music_consistency": round(feat.get("music_consistency", 0.5), 3),
-                "win_streak": feat.get("win_streak", 0),
-            }
-            results.append(result)
-        
-        # Sort by probability
-        results.sort(key=lambda x: x["model_prob"], reverse=True)
+                "volatility": round(float(volatility[i]), 3),
+                "draw": draws[i],
+                "draw_factor": round(feat["draw_factor"], 3),
+            })
+
+        results.sort(key=lambda x: x["win_prob"], reverse=True)
         for i, r in enumerate(results):
             r["rank"] = i + 1
-        
-        # Selections
-        bases = results[:2]
-        outsiders = [r for r in results[2:] if r["model_prob"] > 2.5]
-        outsiders.sort(key=lambda x: x["value_ratio"], reverse=True)
-        outsiders = outsiders[:3]
-        
-        # Combinaisons
-        top6 = [r["number"] for r in results[:min(6, n_runners)]]
-        trio_combos = list(combinations(top6, 3))[:10]
-        
-        top8 = [r["number"] for r in results[:min(8, n_runners)]]
-        quinte_combos = list(combinations(top8, 5))[:10]
-        
-        # Indices
-        sorted_p = sorted([r["model_prob"] for r in results], reverse=True)
+
+        # === ÉTAPE 7 : Exotiques + Place ===
+        exotics = analyze_exotics(results, orders)
+        bp = best_place_bet(results, self.n)
+
+        # === Diagnostic ===
+        sorted_p = sorted([r["win_prob"] for r in results], reverse=True)
         if len(sorted_p) >= 2:
             gap = sorted_p[0] - sorted_p[1]
-            conf_idx = min(100.0, round(45.0 + gap * 2.2, 1))
+            conf_idx = min(100, round(45 + gap * 2.5, 1))
         else:
-            conf_idx = 50.0
-        
-        avg_vol = float(mc["vol_per_horse"].mean())
-        vol_idx = min(100.0, round(avg_vol * 55.0, 1))
-        
-        # Overround
-        if has_odds:
-            raw_overround = sum(1.0 / h["odds"] for h in horses if h.get("odds", 0) > CONFIG.MIN_ODDS)
-            overround_pct = round((raw_overround - 1.0) * 100, 1)
+            conf_idx = 50
+        vol_idx = min(100, round(volatility.mean() * 60, 1))
+
+        # KL divergence modèle / marché (mesure de désaccord)
+        if has_market:
+            eps = 1e-12
+            kl = float(np.sum(p_final * np.log((p_final + eps) / (p_market + eps))))
         else:
-            overround_pct = None
-        
-        execution_time = time.time() - start_time
-        
+            kl = None
+
         return {
             "results": results,
-            "bases": bases,
-            "outsiders": outsiders,
-            "trio_combos": trio_combos,
-            "quinte_combos": quinte_combos,
+            "exotics": exotics,
+            "best_place": bp,
             "confidence_idx": conf_idx,
             "volatility_idx": vol_idx,
             "overround_pct": overround_pct,
-            "weights": weights,
-            "mc": mc,
-            "has_odds": has_odds,
-            "execution_time": round(execution_time, 2),
+            "dynamic_value_threshold": round(dyn_value_th, 3),
+            "kl_divergence": round(kl, 3) if kl else None,
+            "execution_time": round(time.time() - t0, 2),
+            "n_simulations": mc_iter,
         }
-    
-    except Exception as e:
-        logger.error(f"Engine error: {str(e)}")
-        raise
+
+
+def run_engine_v4(race_info: Dict, horses: List[Dict], **kwargs) -> Dict:
+    """API publique compatible avec l'ancienne v3."""
+    engine = RaceEngine(race_info, horses)
+    return engine.predict(**kwargs)
+
 
 # =============================================================================
-# SECTION 10 — ANALYSIS GENERATION
+# 10.  INTERFACE STREAMLIT
 # =============================================================================
-
-def generate_analysis(pred: Dict, race: Dict) -> str:
-    """Professional analysis report"""
-    results = pred["results"]
-    bases = pred["bases"]
-    outsiders = pred["outsiders"]
-    conf = pred["confidence_idx"]
-    vol = pred["volatility_idx"]
-    rt = race.get("race_type", "Plat")
-    dist = race.get("distance", 1600)
-    nr = race.get("n_runners", len(results))
-    
-    lines = []
-    lines.append(f"## 📊 Analyse QuantTurf Pro v{CONFIG.APP_VERSION}\n")
-    lines.append(f"**{rt}** — **{dist}m** — **{nr} partants**\n\n")
-    lines.append("---\n\n")
-    
-    # Confiance
-    if conf > 72:
-        conf_txt = "**Hiérarchie claire** — Favori solidement identifié."
-    elif conf > 56:
-        conf_txt = "**Difficulté intermédiaire** — Plusieurs candidats sérieux."
-    else:
-        conf_txt = "**Course très ouverte** — Hiérarchie incertaine."
-    
-    # Volatilité
-    if vol > 62:
-        vol_txt = "**Volatilité très élevée** — Forte incertitude stochastique."
-    elif vol > 38:
-        vol_txt = "**Volatilité modérée** — Aléas possibles mais lisible."
-    else:
-        vol_txt = "**Volatilité faible** — Course structurellement stable."
-    
-    lines.append(f"{conf_txt}\n\n{vol_txt}\n\n")
-    
-    # Bases
-    if bases:
-        lines.append("### ⭐ Bases\n")
-        for b in bases:
-            vsign = " 🟢 VALUE" if b["is_value_bet"] else ""
-            lines.append(
-                f"- **N°{b['number']} — {b['name']}** : {b['model_prob']}% | "
-                f"Kelly {b['kelly_bet_fraction']:.1%} | ROI {b['expected_roi']:.1f}%{vsign}\n"
-            )
-        lines.append("\n")
-    
-    # Outsiders
-    if outsiders:
-        lines.append("### 💎 Outsiders Value\n")
-        for o in outsiders:
-            lines.append(
-                f"- **N°{o['number']} — {o['name']}** : {o['model_prob']}% | "
-                f"Ratio {o['value_ratio']:.2f}x | Cote {o['odds']}\n"
-            )
-        lines.append("\n")
-    
-    lines.append("### ⚙️ Configuration\n")
-    lines.append(
-        f"Modèle: Softmax → Logit (Platt) → Bayésien log-odds → MC {pred.get('mc', {}).get('simulated_probs', 'N/A')} itérations  \n"
-        f"Confiance: **{conf}/100** | Volatilité: **{vol}/100** | Exécution: **{pred.get('execution_time', 0)}s**\n"
-    )
-    
-    return "".join(lines)
-
-# =============================================================================
-# SECTION 11 — UI STYLING & LAYOUT
-# =============================================================================
-
-DARK_BG = "rgba(10,10,26,0)"
-GRID_CLR = "rgba(255,255,255,0.08)"
-TEXT_CLR = "#e0e0e0"
-GREEN = "#00ff88"
-RED = "#ff4d6d"
-BLUE = "#4cc9f0"
-ORANGE = "#ff9f43"
-
-
-def apply_css() -> None:
+def apply_css():
     st.markdown("""
-<style>
-.stApp { background: linear-gradient(135deg, #07071a 0%, #0d1b2a 40%, #12192b 100%); }
-[data-testid="stSidebar"] { background: linear-gradient(180deg, #0d1b2a, #07071a); }
-[data-testid="metric-container"] { background: rgba(13,27,42,0.85); border: 1px solid rgba(0,255,136,0.18); }
-.stButton > button { background: linear-gradient(135deg, #00c896, #00b4d8); color: #000; }
-h1, h2, h3 { color: #e8e8e8 !important; }
-</style>
-""", unsafe_allow_html=True)
+    <style>
+    .stApp { background: linear-gradient(135deg,#07071a 0%,#0d1b2a 40%,#12192b 100%); }
+    [data-testid="stSidebar"] { background: linear-gradient(180deg,#0d1b2a,#07071a); }
+    h1, h2, h3 { color:#e8e8e8 !important; }
+    div[data-testid="metric-container"] {
+        background: rgba(0,180,216,0.08);
+        border: 1px solid rgba(0,255,136,0.15);
+        border-radius: 12px;
+        padding: 10px;
+    }
+    .value-bet { color:#00ff88; font-weight:bold; }
+    </style>
+    """, unsafe_allow_html=True)
 
 
-def render_header() -> None:
+def render_header():
     st.markdown(f"""
-<div style="text-align:center; padding: 22px 0;">
-    <h1 style="font-size:2.8em; background: linear-gradient(90deg,#00ff88,#00b4d8);
-               -webkit-background-clip:text; -webkit-text-fill-color:transparent;">
-        🏇 {CONFIG.APP_NAME} PRO
-    </h1>
-    <p style="color:#6b7fa3; font-size:0.95em;">Moteur Quantitatif Professionnel — V{CONFIG.APP_VERSION}</p>
-</div>
-""", unsafe_allow_html=True)
+    <div style="text-align:center; padding: 18px 0;">
+      <h1 style="font-size:2.6em;
+                 background: linear-gradient(90deg,#00ff88,#00b4d8,#7b2ff7);
+                 -webkit-background-clip:text;
+                 -webkit-text-fill-color:transparent;">
+        🏇 {CONFIG.APP_NAME} v{CONFIG.APP_VERSION}
+      </h1>
+      <p style="color:#7b9ec4; font-size:1.05em; margin-top:-10px;">
+        <em>{CONFIG.APP_TAG}</em> — Plackett-Luce · Benter Blend · Kelly dynamique
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
 
 
-def sidebar_config() -> Tuple[int, float, float]:
-    with st.sidebar:
-        st.markdown("### ⚙️ Configuration")
-        st.markdown("---")
-        mc_iter = st.slider("MC Itérations", 500, 5000, CONFIG.MC_ITERATIONS, 250)
-        mw = st.slider("Poids Marché", 0.0, 0.60, CONFIG.MARKET_WEIGHT, 0.05)
-        vt = st.slider("Seuil Value", 1.05, 1.60, CONFIG.VALUE_THRESHOLD, 0.05)
-        st.markdown("---")
-        st.markdown("### 📊 Professional Tools\n- Kelly Criterion pour bankroll\n- ROI Expected\n- Tracking historique")
-    return mc_iter, mw, vt
+def init_session_state():
+    if "horses_data" not in st.session_state:
+        st.session_state.horses_data = pd.DataFrame({
+            "N°": list(range(1, 11)),
+            "Nom": [f"Cheval {i+1}" for i in range(10)],
+            "Cote": [5.0] * 10,
+            "Musique Cheval": [""] * 10,
+            "Musique Driver": [""] * 10,
+            "Musique Entraîneur": [""] * 10,
+            "Corde": [0] * 10,
+            "Poids": [56.0] * 10,
+            "Jours repos": [21] * 10,
+        })
+    if "prediction" not in st.session_state:
+        st.session_state.prediction = None
 
-# =============================================================================
-# SECTION 12 — STREAMLIT APP
-# =============================================================================
 
-def main() -> None:
-    st.set_page_config(
-        page_title=f"🏇 {CONFIG.APP_NAME}",
-        page_icon="🏇",
-        layout="wide",
-        initial_sidebar_state="expanded",
-    )
-    
+def main():
+    st.set_page_config(page_title=f"🏇 {CONFIG.APP_NAME} v{CONFIG.APP_VERSION}",
+                       layout="wide", initial_sidebar_state="expanded")
+    init_session_state()
     apply_css()
     render_header()
-    
-    mc_iter, market_w, value_t = sidebar_config()
-    
-    tab1, tab2 = st.tabs(["📥 Données", "📊 Résultats"])
-    
+
+    # ============= SIDEBAR =============
+    with st.sidebar:
+        st.markdown("### ⚙️ Paramètres du moteur")
+
+        with st.expander("🔬 Monte Carlo / Plackett-Luce", expanded=True):
+            mc_iter = st.slider("Itérations PL", 1000, 15000,
+                                CONFIG.MC_ITERATIONS, 500)
+            noise = st.slider("Bruit log-normal", 0.05, 0.40,
+                              CONFIG.NOISE_BASE, 0.01)
+            CONFIG.NOISE_BASE = noise
+
+        with st.expander("🎯 Marché & Benter Blend", expanded=True):
+            mw = st.slider("Poids du marché", 0.0, 0.70,
+                           CONFIG.MARKET_WEIGHT, 0.05)
+            alpha = st.slider("α (exposant modèle)", 0.5, 2.0,
+                              CONFIG.BENTER_ALPHA, 0.05)
+            beta = st.slider("β (exposant marché)", 0.0, 2.0,
+                             CONFIG.BENTER_BETA, 0.05)
+            CONFIG.BENTER_ALPHA = alpha
+            CONFIG.BENTER_BETA = beta
+            CONFIG.OVERROUND_CORRECTION = st.checkbox(
+                "Débiaiser favori/outsider", value=True,
+                help="Correction power du biais favori-outsider")
+
+        with st.expander("🧠 Empirique & shrinkage"):
+            emp_w = st.slider("Poids empirisme (corde+exp.)", 0.0, 0.70,
+                               CONFIG.EMPIRICAL_WEIGHT, 0.05)
+            CONFIG.EMPIRICAL_WEIGHT = emp_w
+            CONFIG.USE_EXPERIENCE_FACTOR = st.checkbox(
+                "Facteur expérience", value=CONFIG.USE_EXPERIENCE_FACTOR)
+            K = st.slider("Shrinkage K (courses fantômes)", 0.0, 15.0,
+                          CONFIG.SHRINKAGE_K, 0.5,
+                          help="Plus K est élevé, plus on tire vers la moyenne population")
+            CONFIG.SHRINKAGE_K = K
+
+        with st.expander("💰 Value & Kelly"):
+            vt = st.slider("Seuil de value (ratio)", 1.05, 1.80,
+                            CONFIG.VALUE_THRESHOLD, 0.05)
+            kf = st.slider("Kelly fractionnaire", 0.05, 0.50,
+                            CONFIG.KELLY_FRACTION, 0.05)
+            CONFIG.KELLY_FRACTION = kf
+            max_stake = st.slider("Cap max bankroll (%)", 1.0, 15.0,
+                                  CONFIG.MAX_KELLY_STAKE * 100, 0.5) / 100
+            CONFIG.MAX_KELLY_STAKE = max_stake
+
+        st.markdown("---")
+        st.caption(f"v{CONFIG.APP_VERSION} — {CONFIG.APP_TAG}")
+        st.caption("Inspiré de Benter (1994), Harville (1973)")
+
+    # ============= TABS =============
+    tab1, tab2, tab3 = st.tabs(["📥 Données course",
+                                "📊 Pronostics",
+                                "ℹ️ Aide & Méthode"])
+
+    # ---------- TAB 1 : DONNÉES ----------
     with tab1:
-        st.markdown("## 🏁 Informations de course")
-        c1, c2, c3, c4 = st.columns(4)
+        st.markdown("## 🏁 Informations de la course")
+        c1, c2, c3, c4 = st.columns([1.2, 1, 1, 1.5])
         with c1:
-            race_type = st.selectbox("Type", CONFIG.RACE_TYPES)
+            race_type = st.selectbox("Discipline", CONFIG.RACE_TYPES)
         with c2:
             distance = st.number_input("Distance (m)", 800, 7200, 1600, 100)
         with c3:
-            discipline = st.text_input("Prix")
+            track = st.selectbox("Terrain", CONFIG.TRACK_CONDITIONS)
         with c4:
-            level = st.text_input("Niveau")
-        
-        st.markdown("---\n## 🐎 Partants")
-        n_horses = st.slider("Nombre", 2, 20, 10)
-        
-        horses_input = []
-        for i in range(int(n_horses)):
-            with st.expander(f"🐎 N°{i+1}", expanded=(i < 2)):
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    hn = st.number_input("N°", 1, 30, i+1, key=f"n_{i}")
-                    name = st.text_input("Nom", f"Cheval {i+1}", key=f"nm_{i}")
-                    mus = st.text_input("Musique", "", key=f"mu_{i}", placeholder="1a2a3p")
-                with c2:
-                    sex = st.selectbox("Sexe", ["H","F","G"], key=f"sx_{i}")
-                    age = st.number_input("Âge", 2, 20, 4, key=f"ag_{i}")
-                    odds = st.number_input("Cote", 0.0, 999.0, 5.0, 0.5, key=f"od_{i}")
-                with c3:
-                    earn = st.number_input("Gains €", 0, 9999999, 0, 1000, key=f"er_{i}")
-                    drv = st.number_input("% Driver", 0.0, 100.0, 12.0, 0.5, key=f"dv_{i}")
-                    trn = st.number_input("% Entraîneur", 0.0, 100.0, 12.0, 0.5, key=f"tr_{i}")
-                
-                horses_input.append({
-                    "number": hn, "name": name, "sex": sex, "age": age,
-                    "odds": odds, "earnings": earn,
-                    "driver_win_pct": drv, "trainer_win_pct": trn,
-                    "music": mus, "draw": 0,
-                })
-        
+            # Auto-suggestion du type de départ
+            default_depart = 0
+            if race_type in ("Attelé", "Monté"):
+                default_depart = 1
+            depart = st.selectbox("Type de départ", CONFIG.DEPART_TYPES,
+                                  index=default_depart)
+
+        prix = st.text_input("Nom du prix (optionnel)", "")
+
         st.markdown("---")
-        if st.button("🚀 ANALYSER", use_container_width=True):
-            if len(horses_input) < 2:
-                st.error("Min 2 partants")
-                return
-            
-            with st.spinner("Analyse en cours..."):
-                try:
-                    pred = run_engine(
-                        {"race_type": race_type, "distance": int(distance),
-                         "discipline": discipline, "race_level": level},
-                        horses_input,
-                        mc_iter=mc_iter, market_weight=market_w, value_threshold=value_t
-                    )
-                    st.session_state["prediction"] = pred
-                    st.session_state["race_info"] = {
-                        "race_type": race_type, "distance": distance
-                    }
-                    st.success(f"✅ Terminé en {pred.get('execution_time', 0)}s")
-                except Exception as e:
-                    st.error(f"❌ Erreur: {str(e)}")
-    
-    with tab2:
-        if "prediction" not in st.session_state:
-            st.info("Lancez l'analyse depuis l'onglet Données")
-        else:
-            pred = st.session_state["prediction"]
-            
-            # KPIs
-            st.markdown("## 📊 KPIs")
-            k1, k2, k3, k4 = st.columns(4)
-            with k1:
-                st.metric("Confiance", f"{pred['confidence_idx']}/100")
-            with k2:
-                st.metric("Volatilité", f"{pred['volatility_idx']}/100")
-            with k3:
-                st.metric("Partants", len(pred["results"]))
-            with k4:
-                vb = sum(1 for r in pred["results"] if r["is_value_bet"])
-                st.metric("Value Bets", vb)
-            
-            st.markdown("---\n## 🏆 Classement")
-            
-            # Results table
-            res_df = []
-            for r in pred["results"][:15]:
-                res_df.append({
-                    "Rg": r["rank"],
-                    "N°": r["number"],
-                    "Nom": r["name"],
-                    "Modèle%": f"{r['model_prob']:.2f}",
-                    "Kelly%": f"{r['kelly_bet_fraction']*100:.2f}",
-                    "ROI%": f"{r['expected_roi']:.1f}",
-                    "Ratio": f"{r['value_ratio']:.2f}x",
-                    "Value": "🟢" if r["is_value_bet"] else "⚪",
+        st.markdown("## 🐎 Tableau des partants")
+        st.caption("✏️ Modifiez directement le tableau. Les champs **Poids** et "
+                   "**Jours repos** sont utilisés en Plat ; en Trot, seul "
+                   "**Jours repos** est exploité.")
+
+        edited = st.data_editor(
+            st.session_state.horses_data,
+            use_container_width=True,
+            num_rows="dynamic",
+            height=420,
+            column_config={
+                "N°": st.column_config.NumberColumn(min_value=1, max_value=99),
+                "Cote": st.column_config.NumberColumn(format="%.2f", min_value=1.0),
+                "Corde": st.column_config.NumberColumn(min_value=0, max_value=20),
+                "Poids": st.column_config.NumberColumn(format="%.1f", min_value=40.0, max_value=80.0),
+                "Jours repos": st.column_config.NumberColumn(min_value=0, max_value=999),
+            },
+        )
+        if edited is not None:
+            st.session_state.horses_data = edited
+
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            run_btn = st.button("🚀 LANCER L'ANALYSE",
+                                 use_container_width=True, type="primary")
+        with c2:
+            reset_btn = st.button("🔄 Reset", use_container_width=True)
+            if reset_btn:
+                st.session_state.horses_data = pd.DataFrame({
+                    "N°": list(range(1, 11)),
+                    "Nom": [f"Cheval {i+1}" for i in range(10)],
+                    "Cote": [5.0] * 10,
+                    "Musique Cheval": [""] * 10,
+                    "Musique Driver": [""] * 10,
+                    "Musique Entraîneur": [""] * 10,
+                    "Corde": [0] * 10,
+                    "Poids": [56.0] * 10,
+                    "Jours repos": [21] * 10,
                 })
-            
-            st.dataframe(pd.DataFrame(res_df), use_container_width=True, hide_index=True)
-            
-            st.markdown("---\n## 💡 Analyse")
-            st.markdown(generate_analysis(pred, st.session_state.get("race_info", {})))
+                st.rerun()
+
+        if run_btn:
+            horses_list = []
+            for idx, row in st.session_state.horses_data.iterrows():
+                try:
+                    horses_list.append({
+                        "number": int(row["N°"]),
+                        "name": str(row["Nom"]),
+                        "odds": float(row["Cote"]),
+                        "horse_music": str(row["Musique Cheval"]),
+                        "driver_music": str(row["Musique Driver"]),
+                        "trainer_music": str(row["Musique Entraîneur"]),
+                        "draw": int(row["Corde"]) if pd.notna(row["Corde"]) else 0,
+                        "weight": float(row.get("Poids", 56.0)) if pd.notna(row.get("Poids")) else 56.0,
+                        "days_rest": int(row.get("Jours repos", -1)) if pd.notna(row.get("Jours repos")) else -1,
+                    })
+                except Exception as e:
+                    st.error(f"⚠️ Erreur ligne {idx+1} : {e}")
+                    return
+
+            if len(horses_list) < 3:
+                st.error("Au moins 3 partants requis.")
+                return
+
+            with st.spinner(f"🔬 Calcul Plackett-Luce ({mc_iter} simulations)..."):
+                pred = run_engine_v4(
+                    {"race_type": race_type, "distance": distance,
+                     "track": track, "depart_type": depart, "discipline": prix},
+                    horses_list,
+                    mc_iter=mc_iter, market_weight=mw, value_threshold=vt
+                )
+                st.session_state.prediction = pred
+            st.success(f"✅ Analyse terminée en {pred['execution_time']}s — "
+                       f"{pred['n_simulations']} simulations")
+
+    # ---------- TAB 2 : RÉSULTATS ----------
+    with tab2:
+        if st.session_state.prediction is None:
+            st.info("🎯 Saisissez les données puis cliquez sur **LANCER L'ANALYSE**.")
+        else:
+            pred = st.session_state.prediction
+
+            # Diagnostic
+            st.markdown("## 📈 Diagnostic de course")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("🎯 Confiance", f"{pred['confidence_idx']:.1f}/100")
+            c2.metric("🌪️ Volatilité", f"{pred['volatility_idx']:.1f}/100")
+            if pred["overround_pct"] is not None:
+                c3.metric("📉 Overround", f"{pred['overround_pct']:.1f}%",
+                          help="Marge bookmaker (>20% = juice élevé)")
+            else:
+                c3.metric("📉 Overround", "—")
+            c4.metric("📐 Seuil value (dyn.)", f"{pred['dynamic_value_threshold']:.2f}",
+                      help="Ajusté selon overround")
+
+            if pred["kl_divergence"] is not None:
+                st.caption(f"🧮 Divergence KL(modèle ‖ marché) = "
+                           f"**{pred['kl_divergence']:.3f}** — "
+                           f"{'fort désaccord' if pred['kl_divergence'] > 0.15 else 'accord modéré'}")
+
+            st.markdown("---")
+            st.markdown("## 🏆 Classement final & paris GAGNANT")
+            df = pd.DataFrame([{
+                "Rg": r["rank"],
+                "N°": r["number"],
+                "Nom": r["name"][:18],
+                "Cote": f"{r['odds']:.2f}",
+                "Modèle %": f"{r['win_prob_model']:.1f}",
+                "Marché %": f"{r['win_prob_market']:.1f}",
+                "🎯 Final %": f"{r['win_prob']:.2f}",
+                "Placé %": f"{r['place_prob']:.1f}",
+                "Ratio": f"{r['value_ratio']:.2f}",
+                "ROI %": f"{r['expected_roi']:+.1f}",
+                "Kelly %": f"{r['kelly_recommended']*100:.2f}",
+                "Vol.": f"{r['volatility']:.2f}",
+                "Value": "🟢" if r["is_value_bet"] else "⚪",
+            } for r in pred["results"]])
+            st.dataframe(df, use_container_width=True, hide_index=True, height=380)
+
+            # Value bets en évidence
+            value_bets = [r for r in pred["results"] if r["is_value_bet"]]
+            if value_bets:
+                st.markdown("### 💎 Value bets détectés")
+                for vb in value_bets[:5]:
+                    st.markdown(
+                        f"- **N°{vb['number']} {vb['name']}** "
+                        f"@ cote {vb['odds']:.2f} — "
+                        f"prob. modèle {vb['win_prob']:.1f}% vs marché {vb['win_prob_market']:.1f}% "
+                        f"→ Kelly recommandé : **{vb['kelly_recommended']*100:.2f}%** "
+                        f"(ROI espéré : {vb['expected_roi']:+.1f}%)"
+                    )
+            else:
+                st.info("⚪ Aucun value bet détecté sur ce marché.")
+
+            # Meilleur placé
+            if pred["best_place"]:
+                bp = pred["best_place"]
+                st.markdown("---")
+                st.markdown("## 🥉 Meilleur pari **PLACÉ**")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("N°", bp["number"])
+                c2.metric("Cheval", bp["name"][:15])
+                c3.metric("Prob. Placé", f"{bp['place_prob']:.1f}%")
+                c4.metric("ROI Placé", f"{bp['expected_roi_place']:+.1f}%")
+                st.markdown(
+                    f"💡 Cote placé estimée : **{bp['estimated_place_odds']:.2f}** — "
+                    f"Mise Kelly recommandée : **{bp['kelly_recommended']*100:.2f}%** "
+                    f"du bankroll"
+                )
+
+            # Exotiques
+            st.markdown("---")
+            st.markdown("## 🎲 Paris exotiques (Top combinaisons)")
+            ex = pred["exotics"]
+            tabs_exo = st.tabs(["Couplé Gagnant", "Couplé Placé",
+                                "Trio Ordre", "Trio Désordre",
+                                "Quarté+", "Quinté+"])
+
+            def _render_exotic(items, key):
+                if not items:
+                    st.info("Aucune combinaison significative.")
+                    return
+                df_e = pd.DataFrame([{
+                    "Rg": x["rank"],
+                    "Combo": x.get("combo", "—"),
+                    **({"Détail": x["names"]} if "names" in x else {}),
+                    "Prob %": x["prob_pct"],
+                    "Cote est.": x["estimated_odds"],
+                    "ROI %": x["expected_roi"],
+                } for x in items])
+                st.dataframe(df_e, use_container_width=True, hide_index=True)
+
+            with tabs_exo[0]: _render_exotic(ex["couple_gagnant"], "cg")
+            with tabs_exo[1]: _render_exotic(ex["couple_place"], "cp")
+            with tabs_exo[2]: _render_exotic(ex["trio_ordre"], "to")
+            with tabs_exo[3]: _render_exotic(ex["trio_desordre"], "td")
+            with tabs_exo[4]: _render_exotic(ex["quarte_desordre"], "q4")
+            with tabs_exo[5]: _render_exotic(ex["quinte_desordre"], "q5")
+
+    # ---------- TAB 3 : AIDE ----------
+    with tab3:
+        st.markdown("""
+## 🎓 Méthodologie QuantTurf v4.0
+
+### 🔬 Architecture du moteur
+
+```
+Musique → Parsing + Shrinkage bayésien → Score composite
+                                              ↓
+                                          Softmax
+                                              ↓
+                                  Correction empirique (corde+exp)
+                                              ↓
+                                       p_modèle
+                                              ↓
+Cotes marché → Débiaisage power → p_marché
+                                              ↓
+                              BENTER BLEND : p ∝ p_modèle^α · p_marché^β
+                                              ↓
+                          Plackett-Luce (5000 ordres simulés)
+                                              ↓
+                    Win / Place / Couplé / Trio / Quarté+ / Quinté+
+                                              ↓
+                                   Kelly dynamique + ROI
+```
+
+### 📚 Formules clés
+
+**1. Shrinkage bayésien (musique)**
+$$\\text{score}_{\\text{shrunk}} = \\frac{n \\cdot \\text{score}_{\\text{obs}} + K \\cdot \\mu_{\\text{pop}}}{n + K}$$
+
+**2. Débiaisage des cotes (favori-outsider correction)**
+$$p_{\\text{vraie}} \\propto \\left(\\frac{1}{\\text{cote}}\\right)^\\gamma, \\quad \\gamma \\approx 1.12$$
+
+**3. Benter Blend**
+$$p_{\\text{finale}} \\propto p_{\\text{modèle}}^\\alpha \\cdot p_{\\text{marché}}^\\beta$$
+
+**4. Plackett-Luce (Harville)** — ordre d'arrivée séquentiel proportionnel aux forces.
+
+**5. Kelly fractionnaire dynamique**
+$$f^* = \\frac{p \\cdot b - q}{b}, \\quad f_{\\text{misé}} = \\min\\left(f^* \\cdot \\frac{1}{1+\\text{vol}}, f_{\\max}\\right)$$
+
+### 🎯 Stratégie recommandée
+
+| Type de pari | Quand l'utiliser | Risque |
+|---|---|---|
+| **Gagnant (value)** | Ratio > 1.20 ET cote > 2.5 | 🟡 Moyen |
+| **Placé** | Champion avec cote ≥ 4 | 🟢 Faible |
+| **Couplé Placé** | ROI > 50% | 🟡 Moyen |
+| **Trio désordre** | ROI > 100% sur 3 favoris | 🟠 Élevé |
+| **Quinté+** | Mise faible, ROI espéré > 200% | 🔴 Très élevé |
+
+### ⚠️ Avertissements
+
+- 🎰 **Les performances passées ne préjugent pas des résultats futurs**
+- 💸 **Jouez avec modération** — ne misez jamais plus que ce que vous pouvez perdre
+- 📊 Le modèle nécessite un marché suffisamment liquide pour le Benter Blend
+- 🐎 La corde au Trot n'est pertinente qu'en départ **AUTOSTART**
+- 🔍 Les statistiques empiriques sont des **valeurs indicatives basées sur des études publiques** ; affinez-les selon votre propre base de données.
+
+### 📖 Références
+
+- Benter, W. (1994). *Computer Based Horse Race Handicapping and Wagering Systems.*
+- Harville, D. (1973). *Assigning Probabilities to the Outcomes of Multi-Entry Competitions.*
+- Kelly, J. L. (1956). *A New Interpretation of Information Rate.*
+- Snowberg & Wolfers (2010). *Explaining the Favorite-Longshot Bias.*
+        """)
 
 
 if __name__ == "__main__":
