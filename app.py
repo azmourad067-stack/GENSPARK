@@ -1,6 +1,6 @@
 """
 ═══════════════════════════════════════════════════════════════════════════════
- QuantTurf Pro v4.1.0 — "BENTER EDITION + DATA-CALIBRATED"
+ QuantTurf Pro v4.0.0 — "BENTER EDITION"
 ═══════════════════════════════════════════════════════════════════════════════
  Améliorations majeures par rapport à v3.3.0 :
  ─────────────────────────────────────────────
@@ -49,42 +49,27 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Config:
     # --- App ---
-    APP_VERSION: str = "4.1.0"
+    APP_VERSION: str = "4.0.0"
     APP_NAME: str = "QuantTurf Pro"
-    APP_TAG: str = "Benter Edition + Data-Calibrated"
+    APP_TAG: str = "Benter Edition"
 
     # --- Monte Carlo / Plackett-Luce ---
-    MC_ITERATIONS: int = 8000
-    TEMPERATURE: float = 1.0
-    NOISE_BASE: float = 0.20           # v4.1: +incertitude reconnue
+    MC_ITERATIONS: int = 5000          # tirages PL pour exotiques
+    TEMPERATURE: float = 1.0           # softmax temperature (1.0 = neutre)
+    NOISE_BASE: float = 0.18           # bruit log-normal pour PL
 
-    # --- Marché (CALIBRÉ v4.1 sur backtest 12 courses réelles) ---
-    # Backtest : le marché PMU bat le modèle de 15% en log-loss.
-    # Donc β > α par défaut.
-    MARKET_WEIGHT: float = 0.50        # ↑ de 0.35 → 0.50
-    BENTER_ALPHA: float = 0.40         # ↓ de 1.10 → 0.40
-    BENTER_BETA: float = 1.50          # ↑ de 0.90 → 1.50
-    OVERROUND_CORRECTION: bool = True
+    # --- Marché ---
+    MARKET_WEIGHT: float = 0.35        # poids du marché dans Benter Blend
+    BENTER_ALPHA: float = 1.10         # exposant log(p_model)
+    BENTER_BETA: float = 0.90          # exposant log(p_market)
+    OVERROUND_CORRECTION: bool = True  # corriger le biais favori-outsider
 
-    # --- Platt Scaling par discipline (calibré sur backtest) ---
-    PLATT_GLOBAL: Tuple[float, float] = (0.80, -0.40)
-    PLATT_PLAT:   Tuple[float, float] = (0.45, -1.30)  # forte compression
-    PLATT_TROT:   Tuple[float, float] = (1.20, +0.40)  # légère amplification
-    USE_PLATT_CALIBRATION: bool = True
-
-    # --- Benter Blend par discipline (calibré) ---
-    BENTER_AB_PLAT: Tuple[float, float] = (0.30, 0.80)
-    BENTER_AB_TROT: Tuple[float, float] = (0.40, 1.90)
-    USE_DISCIPLINE_BLEND: bool = True
-
-    # --- Value / Kelly (CALIBRÉ v4.1) ---
-    VALUE_THRESHOLD: float = 1.15
-    VALUE_COTE_MIN: float = 5.0        # NEW : filtre cote min value bet
-    VALUE_COTE_MAX: float = 10.0       # NEW : filtre cote max value bet
-    KELLY_FRACTION: float = 0.20       # ↓ de 0.25 → 0.20
-    MIN_KELLY_ODDS: float = 4.50       # ↑ de 2.20 → 4.50
-    MAX_KELLY_STAKE: float = 0.03      # ↓ de 0.05 → 0.03 (cap 3%)
-    PLACE_ODDS_FACTOR: Dict[str, float] = None
+    # --- Value / Kelly ---
+    VALUE_THRESHOLD: float = 1.15      # ratio modèle/marché min pour "value"
+    KELLY_FRACTION: float = 0.25       # Kelly fractionnaire (25%)
+    MIN_KELLY_ODDS: float = 2.20       # cote min pour Kelly (sous, EV-)
+    MAX_KELLY_STAKE: float = 0.05      # cap absolu : 5% bankroll max
+    PLACE_ODDS_FACTOR: Dict[str, float] = None  # rapport cote_placé / cote_gagn
 
     # --- Empirique (corde, expérience) ---
     EMPIRICAL_WEIGHT: float = 0.25
@@ -513,53 +498,21 @@ def remove_overround(odds: np.ndarray) -> np.ndarray:
 
 
 def benter_blend(p_model: np.ndarray, p_market: np.ndarray,
-                 alpha: float = None, beta: float = None,
-                 race_type: str = None) -> np.ndarray:
+                 alpha: float = None, beta: float = None) -> np.ndarray:
     """
     Fusion Benter (1994) : p_final ∝ p_model^α · p_market^β
-    v4.1 : exposants par discipline si disponibles.
+    Les exposants modulent la confiance dans chaque source.
+    α=1, β=1 : moyenne géométrique standard.
+    α>1 : on amplifie le modèle ; β>1 : on amplifie le marché.
     """
-    if alpha is None or beta is None:
-        if CONFIG.USE_DISCIPLINE_BLEND and race_type:
-            if race_type == "Plat":
-                alpha, beta = CONFIG.BENTER_AB_PLAT
-            elif race_type in ("Attelé", "Monté"):
-                alpha, beta = CONFIG.BENTER_AB_TROT
-            else:
-                alpha = CONFIG.BENTER_ALPHA
-                beta = CONFIG.BENTER_BETA
-        else:
-            if alpha is None: alpha = CONFIG.BENTER_ALPHA
-            if beta is None:  beta = CONFIG.BENTER_BETA
+    if alpha is None: alpha = CONFIG.BENTER_ALPHA
+    if beta is None:  beta = CONFIG.BENTER_BETA
     eps = 1e-12
     log_blend = alpha * np.log(p_model + eps) + beta * np.log(p_market + eps)
+    # Normalisation via logsumexp pour stabilité
     log_blend -= log_blend.max()
     p = np.exp(log_blend)
     return p / p.sum()
-
-
-def platt_calibrate(probs: np.ndarray, race_type: str = None) -> np.ndarray:
-    """
-    Platt scaling : p_cal = sigmoid(a * logit(p) + b)
-    Paramètres (a, b) calibrés sur 12 courses réelles par discipline.
-
-    En Plat (a=0.45, b=-1.30) : forte compression, le modèle est sur-confiant.
-    En Trot (a=1.20, b=+0.40) : légère amplification.
-    """
-    if not CONFIG.USE_PLATT_CALIBRATION:
-        return probs
-    if race_type == "Plat":
-        a, b = CONFIG.PLATT_PLAT
-    elif race_type in ("Attelé", "Monté"):
-        a, b = CONFIG.PLATT_TROT
-    else:
-        a, b = CONFIG.PLATT_GLOBAL
-    eps = 1e-9
-    p = np.clip(probs, eps, 1 - eps)
-    logit_p = np.log(p / (1 - p))
-    p_cal = 1.0 / (1.0 + np.exp(-np.clip(a * logit_p + b, -50, 50)))
-    s = p_cal.sum()
-    return p_cal / s if s > 0 else probs
 
 
 def plackett_luce_simulate(strengths: np.ndarray, n_iter: int,
@@ -828,6 +781,87 @@ def analyze_exotics(results: List[Dict], orders: np.ndarray,
     return output
 
 
+def generate_quarte_selection(results: List[Dict], orders: np.ndarray,
+                               n_combos: int,
+                               min_relative_prob_pct: float) -> Dict[str, Any]:
+    """
+    Génère une sélection personnalisée de combinaisons Quarté+ (désordre).
+
+    Paramètres
+    ----------
+    results : liste des chevaux, INDEXÉE dans le même ordre que les colonnes
+              du tableau `orders` (index 0..n-1 = ordre d'origine, PAS l'ordre
+              trié par probabilité de victoire).
+    orders  : tableau (n_iter, n_horses) des ordres d'arrivée simulés.
+    n_combos : nombre de combinaisons désirées (1 à 50).
+    min_relative_prob_pct : seuil de probabilité relative au meilleur combo
+              (100% = seulement la meilleure combinaison ; 10% = on élargit
+              jusqu'à des combinaisons 10x moins probables que la favorite).
+
+    Retourne un dict avec la liste des combinaisons + métadonnées
+    (probabilité cumulée, probabilité du favori, seuil réellement appliqué).
+    """
+    n_iter, n_horses = orders.shape
+    if n_horses < 4:
+        return {
+            "combinations": [], "total_prob_pct": 0.0, "n_generated": 0,
+            "coverage_note": "Il faut au moins 4 partants pour un Quarté+."
+        }
+
+    n_combos = int(max(1, min(50, n_combos)))
+    min_relative_prob_pct = float(max(10.0, min(100.0, min_relative_prob_pct)))
+
+    # Comptage des combinaisons top-4 (désordre) sur toutes les simulations PL
+    q4 = {}
+    for it in range(n_iter):
+        key = tuple(sorted(int(x) for x in orders[it, :4]))
+        q4[key] = q4.get(key, 0) + 1
+
+    combos = [(key, c / n_iter) for key, c in q4.items()]
+    if not combos:
+        return {
+            "combinations": [], "total_prob_pct": 0.0, "n_generated": 0,
+            "coverage_note": "Aucune combinaison simulée (augmentez les itérations PL)."
+        }
+    combos.sort(key=lambda x: x[1], reverse=True)
+
+    max_p = combos[0][1]
+    threshold = max_p * (min_relative_prob_pct / 100.0)
+
+    # On garde d'abord toutes les combinaisons au-dessus du seuil relatif
+    filtered = [c for c in combos if c[1] >= threshold]
+    selected = filtered[:n_combos]
+
+    # Si le seuil est trop strict pour atteindre n_combos, on complète avec
+    # les meilleures combinaisons suivantes (sans dupliquer)
+    if len(selected) < n_combos:
+        already = {k for k, _ in selected}
+        extra = [c for c in combos if c[0] not in already]
+        selected += extra[: n_combos - len(selected)]
+
+    out = []
+    for i, (key, p) in enumerate(selected):
+        est_odds = _pmu_estimated_odds(p, "quarte_desordre", 12.0, 5000.0)
+        out.append({
+            "rank": i + 1,
+            "combo": "-".join(str(results[idx]["number"]) for idx in key),
+            "names": " / ".join(results[idx]["name"][:12] for idx in key),
+            "prob_pct": round(p * 100, 3),
+            "relative_pct": round((p / max_p) * 100, 1),
+            "estimated_odds": round(est_odds, 1),
+            "expected_roi": round(expected_roi(p, est_odds, 5), 1),
+        })
+
+    return {
+        "combinations": out,
+        "n_generated": len(out),
+        "total_prob_pct": round(sum(c["prob_pct"] for c in out), 2),
+        "max_combo_prob_pct": round(max_p * 100, 3),
+        "threshold_used_pct": round(threshold * 100, 4),
+        "requested_relative_pct": min_relative_prob_pct,
+    }
+
+
 def best_place_bet(results: List[Dict], n_runners: int) -> Optional[Dict]:
     """Trouve le meilleur cheval pour le pari Placé."""
     if n_runners <= 4:
@@ -955,16 +989,13 @@ class RaceEngine:
         else:
             p_market = np.ones(self.n) / self.n
 
-        # === ÉTAPE 3.5 (v4.1) : Platt scaling du modèle ===
-        p_model = platt_calibrate(p_model, race_type=self.race_type)
-
-        # === ÉTAPE 4 : Benter Blend (v4.1 : discipline-aware) ===
+        # === ÉTAPE 4 : Benter Blend ===
         if has_market and market_weight > 0:
+            # Mélange Benter pondéré : on règle β en fonction du market_weight
+            beta_eff = CONFIG.BENTER_BETA * (market_weight / 0.35)
             p_final = benter_blend(p_model, p_market,
-                                    race_type=self.race_type)
-            if abs(market_weight - 0.50) > 0.05:
-                p_final = (1 - market_weight) * p_model + market_weight * p_final
-                p_final /= p_final.sum()
+                                    alpha=CONFIG.BENTER_ALPHA,
+                                    beta=beta_eff)
         else:
             p_final = p_model
 
@@ -1003,16 +1034,10 @@ class RaceEngine:
 
         for i, (feat, horse) in enumerate(zip(feats, self.horses)):
             ratio = p_final[i] / (p_market[i] + 1e-9)
-            cote = horse.get("odds", 2.0)
-            # v4.1 : filtre value bet par cote (sweet spot [5, 10])
-            is_value = (
-                ratio >= dyn_value_th
-                and p_final[i] >= 0.04
-                and CONFIG.VALUE_COTE_MIN <= cote <= CONFIG.VALUE_COTE_MAX
-            )
-            k_pur, k_reco = kelly_bet(p_final[i], cote,
+            is_value = (ratio >= dyn_value_th) and (p_final[i] >= 0.04)
+            k_pur, k_reco = kelly_bet(p_final[i], horse.get("odds", 2.0),
                                        volatility=1 + volatility[i])
-            roi = expected_roi(p_final[i], cote)
+            roi = expected_roi(p_final[i], horse.get("odds", 2.0))
 
             results.append({
                 "rank": 0,
@@ -1034,12 +1059,19 @@ class RaceEngine:
                 "draw_factor": round(feat["draw_factor"], 3),
             })
 
+        # IMPORTANT : `results` est construit ici dans le même ordre que les
+        # index 0..n-1 utilisés par `orders` (simulations Plackett-Luce).
+        # On conserve une copie "par index d'origine" AVANT le tri par
+        # probabilité de victoire, afin que les paris exotiques (et le
+        # générateur Quarté+) référencent le bon cheval.
+        results_by_index = results.copy()
+
         results.sort(key=lambda x: x["win_prob"], reverse=True)
         for i, r in enumerate(results):
             r["rank"] = i + 1
 
         # === ÉTAPE 7 : Exotiques + Place ===
-        exotics = analyze_exotics(results, orders)
+        exotics = analyze_exotics(results_by_index, orders)
         bp = best_place_bet(results, self.n)
 
         # === Diagnostic ===
@@ -1060,6 +1092,8 @@ class RaceEngine:
 
         return {
             "results": results,
+            "results_by_index": results_by_index,
+            "orders": orders,
             "exotics": exotics,
             "best_place": bp,
             "confidence_idx": conf_idx,
@@ -1129,6 +1163,8 @@ def init_session_state():
         })
     if "prediction" not in st.session_state:
         st.session_state.prediction = None
+    if "quarte_gen" not in st.session_state:
+        st.session_state.quarte_gen = None
 
 
 def main():
@@ -1285,6 +1321,7 @@ def main():
                     mc_iter=mc_iter, market_weight=mw, value_threshold=vt
                 )
                 st.session_state.prediction = pred
+                st.session_state.quarte_gen = None  # reset génération précédente
             st.success(f"✅ Analyse terminée en {pred['execution_time']}s — "
                        f"{pred['n_simulations']} simulations")
 
@@ -1392,6 +1429,74 @@ def main():
             with tabs_exo[4]: _render_exotic(ex["quarte_desordre"], "q4")
             with tabs_exo[5]: _render_exotic(ex["quinte_desordre"], "q5")
 
+            # ── Générateur Quarté+ personnalisé ────────────────────────
+            st.markdown("---")
+            st.markdown("## 🎟️ Générateur de combinaisons Quarté+")
+            st.caption(
+                "Choisissez combien de combinaisons générer et jusqu'à quel "
+                "niveau de probabilité (relative à la combinaison la plus "
+                "probable) vous souhaitez couvrir. 100% = uniquement la "
+                "combinaison la plus probable. 10% = on élargit fortement "
+                "la sélection (combinaisons jusqu'à 10× moins probables "
+                "que la favorite)."
+            )
+
+            gc1, gc2 = st.columns(2)
+            with gc1:
+                nb_combos_q4 = st.slider(
+                    "🔢 Nombre de combinaisons à générer",
+                    min_value=1, max_value=50, value=10, step=1,
+                    key="nb_combos_q4",
+                )
+            with gc2:
+                seuil_prob_q4 = st.slider(
+                    "🎯 Seuil de probabilité relative (%)",
+                    min_value=10, max_value=100, value=50, step=5,
+                    key="seuil_prob_q4",
+                    help="Exprimé en % de la probabilité de la combinaison "
+                         "favorite. 100% = très sélectif, 10% = très large."
+                )
+
+            gen_btn = st.button("🎯 Générer les combinaisons Quarté+",
+                                 use_container_width=True, key="gen_q4_btn")
+            if gen_btn:
+                orders_arr = pred.get("orders")
+                results_idx = pred.get("results_by_index")
+                if orders_arr is None or results_idx is None:
+                    st.warning("⚠️ Relancez l'analyse (données de simulation manquantes).")
+                else:
+                    st.session_state.quarte_gen = generate_quarte_selection(
+                        results_idx, orders_arr, nb_combos_q4, seuil_prob_q4
+                    )
+
+            if st.session_state.quarte_gen:
+                gen = st.session_state.quarte_gen
+                if gen["combinations"]:
+                    st.success(
+                        f"✅ {gen['n_generated']} combinaison(s) générée(s) — "
+                        f"probabilité cumulée : **{gen['total_prob_pct']:.2f}%** — "
+                        f"favori à {gen['max_combo_prob_pct']:.3f}%"
+                    )
+                    df_gen = pd.DataFrame([{
+                        "Rg": c["rank"],
+                        "Combo": c["combo"],
+                        "Chevaux": c["names"],
+                        "Prob %": c["prob_pct"],
+                        "% du favori": c["relative_pct"],
+                        "Cote est.": c["estimated_odds"],
+                        "ROI %": c["expected_roi"],
+                    } for c in gen["combinations"]])
+                    st.dataframe(df_gen, use_container_width=True,
+                                 hide_index=True, height=420)
+                    st.caption(
+                        f"💰 Pour couvrir toutes ces combinaisons : "
+                        f"**{gen['n_generated']} tickets** de base "
+                        f"(ex. {gen['n_generated']}€ de mise totale à 1€/combinaison)."
+                    )
+                else:
+                    st.info(gen.get("coverage_note",
+                                     "Aucune combinaison disponible."))
+
     # ---------- TAB 3 : AIDE ----------
     with tab3:
         st.markdown("""
@@ -1434,6 +1539,13 @@ $$p_{\\text{finale}} \\propto p_{\\text{modèle}}^\\alpha \\cdot p_{\\text{march
 
 **5. Kelly fractionnaire dynamique**
 $$f^* = \\frac{p \\cdot b - q}{b}, \\quad f_{\\text{misé}} = \\min\\left(f^* \\cdot \\frac{1}{1+\\text{vol}}, f_{\\max}\\right)$$
+
+**6. Générateur Quarté+ personnalisé**
+À partir des simulations Plackett-Luce, chaque combinaison top-4 (désordre)
+possible reçoit une probabilité empirique = (nb. d'occurrences / nb. de
+simulations). On trie ces combinaisons par probabilité décroissante, puis on
+retient les `n_combos` meilleures dont la probabilité est au moins égale à
+`seuil (%) × probabilité de la combinaison favorite`.
 
 ### 🎯 Stratégie recommandée
 
