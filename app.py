@@ -828,16 +828,27 @@ def generate_quarte_selection(results: List[Dict], orders: np.ndarray,
     max_p = combos[0][1]
     threshold = max_p * (min_relative_prob_pct / 100.0)
 
-    # On garde d'abord toutes les combinaisons au-dessus du seuil relatif
+    # On ne garde QUE les combinaisons dont la probabilité est ≥ au seuil
+    # relatif choisi. On NE complète PAS automatiquement avec d'autres
+    # combinaisons en dessous du seuil : sinon le curseur de seuil n'a
+    # plus aucun effet visible (c'était le bug signalé). `n_combos` agit
+    # comme un plafond, le seuil comme un filtre — les deux sont indépendants.
     filtered = [c for c in combos if c[1] >= threshold]
     selected = filtered[:n_combos]
+    truncated_by_threshold = len(filtered) < n_combos
 
-    # Si le seuil est trop strict pour atteindre n_combos, on complète avec
-    # les meilleures combinaisons suivantes (sans dupliquer)
-    if len(selected) < n_combos:
-        already = {k for k, _ in selected}
-        extra = [c for c in combos if c[0] not in already]
-        selected += extra[: n_combos - len(selected)]
+    coverage_note = None
+    if not selected:
+        coverage_note = (
+            f"Aucune combinaison n'atteint le seuil de {min_relative_prob_pct:.0f}% "
+            f"de la probabilité du favori. Baissez le seuil pour en obtenir."
+        )
+    elif truncated_by_threshold:
+        coverage_note = (
+            f"Seuil {min_relative_prob_pct:.0f}% atteint : seulement "
+            f"{len(filtered)} combinaison(s) au-dessus de ce seuil "
+            f"(sur les {n_combos} demandées). Baissez le seuil pour en obtenir davantage."
+        )
 
     out = []
     for i, (key, p) in enumerate(selected):
@@ -855,10 +866,12 @@ def generate_quarte_selection(results: List[Dict], orders: np.ndarray,
     return {
         "combinations": out,
         "n_generated": len(out),
+        "n_available_above_threshold": len(filtered),
         "total_prob_pct": round(sum(c["prob_pct"] for c in out), 2),
         "max_combo_prob_pct": round(max_p * 100, 3),
         "threshold_used_pct": round(threshold * 100, 4),
         "requested_relative_pct": min_relative_prob_pct,
+        "coverage_note": coverage_note,
     }
 
 
@@ -1493,6 +1506,8 @@ def main():
                         f"**{gen['n_generated']} tickets** de base "
                         f"(ex. {gen['n_generated']}€ de mise totale à 1€/combinaison)."
                     )
+                    if gen.get("coverage_note"):
+                        st.warning(gen["coverage_note"])
                 else:
                     st.info(gen.get("coverage_note",
                                      "Aucune combinaison disponible."))
