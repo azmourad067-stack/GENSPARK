@@ -1,7 +1,7 @@
-streamlit==1.50.0
-pandas==2.3.2
-numpy==2.2.6
-scipy==1.16.1
-scikit-learn==1.7.1
-requests==2.32.5
-plotly==6.3.0
+streamlit==1.49.1
+pandas==2.2.3
+numpy==1.26.4
+scipy==1.13.1
+scikit-learn==1.5.2
+requests==2.32.3
+plotly==5.24.1
