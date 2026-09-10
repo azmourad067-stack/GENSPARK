@@ -12,6 +12,162 @@ Architecture :
     horseproba/evaluate.py  ← métriques et backtest walk-forward
     horseproba/ui/          ← composants d'affichage
 """
+import os
+import subprocess
+import sys
+
+import pandas as pd
+import streamlit as st
+
+
+HISTORY_FILE = "data/history_pmu.csv"
+
+
+st.sidebar.title("🐎 HorseProba")
+
+if os.path.exists(HISTORY_FILE):
+    st.sidebar.success("Historique PMU réel disponible")
+    history_option = st.sidebar.radio(
+        "Source des données",
+        ["Historique PMU réel", "Autres données"],
+    )
+else:
+    history_option = st.sidebar.radio(
+        "Source des données",
+        ["Autres données"],
+    )
+
+
+if history_option == "Historique PMU réel":
+
+    st.title("🐎 Historique PMU réel")
+
+    st.write(
+        "Télécharge les résultats PMU et les ajoute progressivement "
+        "à l'historique de l'application."
+    )
+
+    st.subheader("Paramètres de collecte")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        days = st.number_input(
+            "Nombre de jours",
+            min_value=1,
+            value=1,
+            step=1,
+        )
+
+    with col2:
+        max_races = st.number_input(
+            "Maximum de courses",
+            min_value=1,
+            value=3,
+            step=1,
+        )
+
+    with col3:
+        pause = st.number_input(
+            "Pause entre requêtes (s)",
+            min_value=0.1,
+            value=1.0,
+            step=0.1,
+        )
+
+    st.info(
+        "💡 Pour le premier test, utilise 1 jour et 3 courses."
+    )
+
+    if st.button("▶️ Lancer la collecte", type="primary"):
+
+        command = [
+            sys.executable,
+            "scripts/build_history.py",
+            "--days",
+            str(days),
+            "--max-races",
+            str(max_races),
+            "--pause",
+            str(pause),
+            "-v",
+        ]
+
+        st.subheader("Journal de collecte")
+
+        log_placeholder = st.empty()
+
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+
+            logs = []
+
+            for line in process.stdout:
+                line = line.rstrip()
+                logs.append(line)
+                log_placeholder.code("\n".join(logs[-100:]))
+
+            return_code = process.wait()
+
+            if return_code == 0:
+                st.success("✅ Collecte terminée.")
+
+                if os.path.exists(HISTORY_FILE):
+                    st.cache_data.clear()
+
+                    df = pd.read_csv(HISTORY_FILE)
+
+                    st.success(
+                        f"Historique disponible : {len(df):,} lignes"
+                    )
+
+                    st.dataframe(
+                        df.tail(100),
+                        use_container_width=True,
+                    )
+            else:
+                st.error(
+                    f"❌ La collecte s'est terminée avec le code {return_code}."
+                )
+
+        except Exception as exc:
+            st.error(f"Erreur pendant la collecte : {exc}")
+
+    if os.path.exists(HISTORY_FILE):
+
+        st.divider()
+
+        st.subheader("📊 Historique actuel")
+
+        df = pd.read_csv(HISTORY_FILE)
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric("Lignes", f"{len(df):,}")
+
+        with col2:
+            if "finish_position" in df.columns:
+                winners = (df["finish_position"] == 1).sum()
+                st.metric("Gagnants", f"{winners:,}")
+
+        with col3:
+            if "date" in df.columns:
+                st.metric(
+                    "Dates",
+                    df["date"].nunique(),
+                )
+
+        st.dataframe(
+            df.tail(200),
+            use_container_width=True,
+        )
 
 from __future__ import annotations
 
