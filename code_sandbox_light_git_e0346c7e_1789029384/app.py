@@ -12,6 +12,40 @@ Architecture :
     horseproba/evaluate.py  ← métriques et backtest walk-forward
     horseproba/ui/          ← composants d'affichage
 """
+
+from __future__ import annotations
+
+import math
+from datetime import date, timedelta
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+import pandas as pd
+import streamlit as st
+
+from horseproba import __version__
+from horseproba.data import pmu
+from horseproba.data.loader import (
+    DataValidationError,
+    load_runners_csv,
+    load_sample_history,
+    sample_dataset_path,
+    validate_runners,
+)
+from horseproba.data.synthetic import generate_history
+from horseproba.evaluate import EvalReport, backtest
+from horseproba.features import FEATURE_LABELS
+from horseproba.model import ConditionalLogitModel
+from horseproba.ui import (
+    empty_runner_template,
+    render_calibration_chart,
+    render_coefficients,
+    render_contributions_chart,
+    render_disclaimer,
+    render_explanations,
+    render_prediction_table,
+    render_probability_chart,
+)
 import os
 import subprocess
 import sys
@@ -169,39 +203,6 @@ if history_option == "Historique PMU réel":
             use_container_width=True,
         )
 
-from __future__ import annotations
-
-import math
-from datetime import date, timedelta
-from pathlib import Path
-from typing import List, Optional, Tuple
-
-import pandas as pd
-import streamlit as st
-
-from horseproba import __version__
-from horseproba.data import pmu
-from horseproba.data.loader import (
-    DataValidationError,
-    load_runners_csv,
-    load_sample_history,
-    sample_dataset_path,
-    validate_runners,
-)
-from horseproba.data.synthetic import generate_history
-from horseproba.evaluate import EvalReport, backtest
-from horseproba.features import FEATURE_LABELS
-from horseproba.model import ConditionalLogitModel
-from horseproba.ui import (
-    empty_runner_template,
-    render_calibration_chart,
-    render_coefficients,
-    render_contributions_chart,
-    render_disclaimer,
-    render_explanations,
-    render_prediction_table,
-    render_probability_chart,
-)
 
 # --------------------------------------------------------------------------- #
 # Configuration de la page
